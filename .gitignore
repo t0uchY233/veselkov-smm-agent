@@ -1,0 +1,35 @@
+# Codex/Orca working attachments
+.orca/
+
+# Runtime data and secrets
+var/
+config/smm-agent.toml
+secrets/
+*.env
+.env*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+dist/
+build/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Generated diagnostics and media
+*.log
+*.mp4
+*.mov
+*.mkv
+*.sqlite3
+playwright-report/
+test-results/
