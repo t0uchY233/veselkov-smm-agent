@@ -7,7 +7,7 @@
 [приём и монтаж видео](video-production.7w3.md),
 [публикация выпуска](publication.7w3.md)
 
-**Status:** accepted
+**Status:** revision_pending
 
 **Decider:** Sardor и Веселков Сергей Николаевич
 
@@ -45,10 +45,12 @@
 Это local-first система из:
 
 1. проектного skill для разговора с Автором в Codex;
-2. команды-оркестратора smmctl, владеющей жизненным циклом Выпуска;
-3. фонового worker для тяжёлых задач, обнаружения записи и действий по времени;
+2. Windows-native команды-оркестратора smmctl, владеющей жизненным циклом
+   Выпуска;
+3. Windows-native фонового worker для тяжёлых задач, обнаружения записи и
+   действий по времени;
 4. адаптеров исследований, генерации изображений, FFmpeg и трёх площадок;
-5. файлового хранилища артефактов и Манифеста Выпуска.
+5. SQLite-хранилища состояния и файлового хранилища bytes артефактов.
 
 Манифест хранит состояние только внутри конкретного Выпуска. Требования помнить
 стадию между независимыми недельными выпусками нет.
@@ -72,19 +74,21 @@
 - Канонический intent: docs/work/veselkov-smm-agent/intent.md.
 - Дизайн: docs/work/veselkov-smm-agent/smm-pipeline/.
 - Предлагаемое приложение: src/smm_agent/.
-- CLI: smmctl.
-- Непубличные рабочие данные: var/releases/<release-id>/.
-- Манифест: var/releases/<release-id>/release.json.
-- Артефакты: var/releases/<release-id>/artifacts/.
-- Очередь worker: var/runtime/jobs.sqlite3.
-- Нечувствительная конфигурация: config/smm-agent.toml.
+- Windows CLI: smmctl.exe.
+- Production data root: выбранная при setup папка, предлагаемо
+  `%LOCALAPPDATA%\VeselkovSmm`.
+- Манифест, очередь и outbox: единая `state/smm.sqlite3`.
+- Диагностический экспорт: `releases/<release-id>/release.json`.
+- Артефакты: `releases/<release-id>/artifacts/`.
+- Нечувствительная конфигурация: `config.toml` вне Git.
 - Токены и OAuth refresh tokens: системное хранилище секретов, не Git и не
   Манифест.
 - Исходный код, SDLC-артефакты и история изменений: публичный GitHub-репозиторий;
   runtime data, секреты, записи и готовые Выпуски в него не входят.
 - Проверки и сборка версий: GitHub Actions; production устанавливается только
   из неизменяемого GitHub Release с версионным тегом.
-- Production runtime: ноутбук Автора с Windows 11 и локальная фоновая среда.
+- Production runtime: ноутбук Автора с Windows 11; Docker и WSL2 не являются
+  обязательными зависимостями.
 
 Имена реализационных путей станут контрактом после принятия design и переноса в
 spec.md.
@@ -94,10 +98,11 @@ spec.md.
 Жизненный цикл одного Выпуска:
 
 topic_received → plan_pending → editorial_building → editorial_pending →
-awaiting_recording → video_ingesting → video_rendering → final_pending →
-approved_to_schedule → preparing_publication → scheduled → published.
+awaiting_recording → video_processing → final_pending → publication_preparing →
+scheduled → publishing → published.
 
-Дополнительные состояния: revision_requested, delayed и needs_attention.
+Дополнительные состояния: revision_requested, recovering, delayed и
+needs_attention.
 
 Переход происходит только по завершённой операции или явному решению Автора.
 Новая версия артефакта после утверждения инвалидирует зависимые утверждения.
@@ -117,10 +122,11 @@ approved_to_schedule → preparing_publication → scheduled → published.
 6. Видеомодуль сопоставляет речь с утверждённым текстом, строит таймлайн
    визуалов и рендерит проверяемый master.
 7. После финального утверждения публикационный модуль создаёт непубличные
-   ресурсы, получает ссылки, выполняет предвыходную проверку и вооружает
-   расписание.
-8. В заданный момент площадки публикуют выпуск. Повторы используют один
-   idempotency key на площадку и не создают дубли.
+   ресурсы, получает доступные ссылки и регистрирует локальные Windows tasks.
+8. В заданный момент локальный coordinator выполняет повторный общий preflight
+   и переводит площадки в public. Нативная отложка площадок в v1 не используется,
+   чтобы выключенный ноутбук не породил заранее запланированную частичную
+   публикацию. Повторы используют один idempotency key на площадку.
 9. Любая команда сначала проверяет допустимость перехода в Манифесте; промпт не
    может обойти эту проверку.
 10. Изменения проходят через GitHub pull request, обязательные проверки и
@@ -136,8 +142,9 @@ approved_to_schedule → preparing_publication → scheduled → published.
 
 ## Limitations
 
-- Фоновая публикация требует локального worker, работающего даже при закрытом
-  Codex.
+- Фоновая публикация требует Windows worker и Task Scheduler. Сон проверяется
+  реальным wake-тестом; выключенный ноутбук не публикует и позже переводит
+  Выпуск в delayed.
 - В v1 Дзен автоматизируется изолированным Playwright-адаптером, поскольку
   публичный официальный API публикации статей не подтверждён. Изменение
   редактора может временно остановить только этот адаптер.
@@ -146,7 +153,7 @@ approved_to_schedule → preparing_publication → scheduled → published.
   транзакцию.
 - Генеративно изменённое лицо может потерять узнаваемость; это блокируется
   финальным человеческим gate.
-- Поставщики моделей и площадки могут менять лимиты; capability checks должны
+- Площадки могут менять лимиты; capability checks должны
   выполняться до постановки в расписание.
 - Исследование, текст и изображения используют только встроенные инструменты
   Codex; внешние AI API в v1 не подключаются.
@@ -161,7 +168,10 @@ spec на проверяемые вертикальные срезы. Hard-to-re
 
 ## Design acceptance
 
-- Decision: accepted
+- Decision: revision pending
 - Date: 2026-09-03
-- Notes: Sardor подтвердил дизайн словом «норм» и отдельно потребовал включить
-  GitHub в контур версионирования, диагностики и deployment.
+- Notes: исходная версия была принята Sardor. При hardening spec 0.2.0 выявлены
+  неустойчивые решения: раздельные JSON/SQLite sources of truth, обязательные
+  Docker/WSL2, Local Bot API Server и смешение локальной и нативной отложки.
+  Пересмотренный дизайн требует одного повторного человеческого решения вместе
+  со spec 0.2.0.

@@ -44,13 +44,14 @@ Full HD ролик с непрерывной эстафетой визуалов
 
 ## Where
 
-- Настраиваемая входная папка: recording_inbox в config/smm-agent.toml.
+- Настраиваемая Windows-папка: recording_inbox в `config.toml`.
 - Снимок папки на момент editorial approval: Манифест Выпуска.
-- Принятый source: var/releases/<release-id>/media/source/.
+- Принятый source: `<data-root>/releases/<release-id>/media/source/`.
 - ASR и alignment: artifacts/video/alignment.json.
 - Таймлайн: artifacts/video/timeline.json.
 - FFmpeg command/filter graph: artifacts/video/render-plan.json.
 - Master: artifacts/video/master-1080p.mp4.
+- Telegram-копия того же монтажа: artifacts/video/telegram-video.mp4.
 - QC: artifacts/video/qc.json и preview.
 
 Папка выбирается при одноразовой настройке Sardor. Весь диск автоматически не
@@ -104,6 +105,11 @@ Render:
 QC проверяет длительность, разрешение, наличие аудио, порядок и число visual_id,
 непрерывность правой панели, отсутствие чёрных интервалов и успешное декодирование
 всего master.
+
+После master создаётся Telegram-копия с тем же cuts, timeline и звуком. Допустимы
+только масштабирование и перекодирование до 49 000 000 bytes под облачный Bot
+API. Если этот предел нельзя выдержать без прохождения readability QC, Выпуск
+блокируется; качество скрытно не снижается.
 
 ## Boundaries
 
