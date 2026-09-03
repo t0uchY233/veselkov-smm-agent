@@ -1,0 +1,40 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "next_action": {
+      "title": "Next Action",
+      "type": "string"
+    },
+    "release_id": {
+      "title": "Release Id",
+      "type": "string"
+    },
+    "revision": {
+      "title": "Revision",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "state": {
+      "title": "State",
+      "type": "string"
+    },
+    "topic": {
+      "title": "Topic",
+      "type": "string"
+    }
+  },
+  "required": [
+    "release_id",
+    "revision",
+    "state",
+    "topic",
+    "next_action"
+  ],
+  "title": "ReleaseResult",
+  "type": "object"
+}

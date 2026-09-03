@@ -3,6 +3,7 @@
 
 # Runtime data and secrets
 var/
+.runtime/
 config/smm-agent.toml
 secrets/
 *.env

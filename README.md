@@ -10,11 +10,11 @@
 1. [Intent](docs/work/veselkov-smm-agent/intent.md)
 2. [7w3-дизайн](docs/work/veselkov-smm-agent/smm-pipeline/smm-pipeline.7w3.md)
 3. [Спецификация](docs/work/veselkov-smm-agent/spec.md)
-4. `plan.md` после принятия спецификации
+4. [План реализации](docs/work/veselkov-smm-agent/plan.md)
 5. реализация и воспроизводимые verification evidence
 
-Сейчас пересмотренный 7w3-дизайн и `spec.md` версии 0.2.0 ожидают единого
-человеческого решения. Production-код ещё не начат.
+Пересмотренный 7w3-дизайн и `spec.md` версии 0.2.1 приняты 3 сентября 2026 года.
+Реализация ведётся вертикальными сквозными срезами из `plan.md`.
 
 ## Безопасность публичного репозитория
 

@@ -1,7 +1,7 @@
 ---
 title: "Спецификация SMM-агента Сергея Веселкова"
-status: draft
-version: 0.2.0
+status: accepted
+version: 0.2.1
 design: smm-pipeline/smm-pipeline.7w3.md
 created: 2026-09-03
 updated: 2026-09-03
@@ -28,7 +28,7 @@ V1 является первой эксплуатационной версией
 - 3–5 содержательных визуалов и отдельная обложка;
 - обнаружение записи, локальное распознавание речи, alignment и FFmpeg-монтаж;
 - три решения Автора над конкретными версиями материалов;
-- подготовка, локальная отложка и публикация на трёх площадках;
+- подготовка и согласованная отложенная публикация на трёх площадках;
 - восстановление частичного сбоя без удаления успешных публикаций и без дублей;
 - аварийное уведомление Sardor в Telegram на ID `276042853`;
 - Windows-native runtime на ноутбуке Автора;
@@ -68,7 +68,7 @@ AI API. Локальное распознавание записи являет�
 |---|---|---|
 | GC-01 | Автор задаёт тему «Как строительный контракт замораживает оборотку» и утверждает план | Codex формирует проверяемый Редакционный пакет: один Основной текст, Реестр источников, 3–5 визуалов, обложка и платформенные представления |
 | GC-02 | Автор утверждает пакет и сохраняет один MP4 длительностью 7:30 в настроенную папку | Worker сам принимает файл и создаёт 1080p master: full-screen до первого anchor, затем 50/50 с непрерывной сменой 3–5 визуалов, последний остаётся до конца |
-| GC-03 | Автор утверждает финал; target — четверг 14:00 Europe/Moscow | До target готовы private YouTube video, Dzen draft и Telegram payload; в target локальный coordinator публикует все три, Telegram содержит нативное видео и caption до 1000 символов со ссылками на оба материала |
+| GC-03 | Автор утверждает финал; target — четверг 14:00 Europe/Moscow | YouTube и Дзен поставлены в нативную отложку на target, ссылка отложенной статьи Дзена и ссылка YouTube заранее вставлены в Telegram payload, а локальная Windows task отправляет нативное видео и caption до 1000 символов в тот же target |
 | GC-04 | После первого public результата одна площадка временно недоступна | Успешное не удаляется, повторяется только отсутствующая публикация с тем же idempotency key; дубль не создаётся |
 | GC-05 | После утверждения пакета Автор меняет число в тексте | Создаётся новая версия зависимых материалов, старые approvals становятся invalidated, старый master и публикационный payload использовать нельзя |
 
@@ -116,8 +116,8 @@ scope; ради неё запрещено заранее добавлять mult
 | UC-07 | Смонтировать | Worker | запись и пакет валидны | master, Telegram-копия, QC | artifacts/job history |
 | UC-08 | Решить финальный gate | Автор | final_pending | разрешена подготовка публикации или revision | approval/transition |
 | UC-09 | Подготовить площадки | Worker | final approved | private/draft/payload готовы | remote IDs/URLs |
-| UC-10 | Поставить локальную отложку | Worker | общий preflight успешен | target job зарегистрирована в DB и Task Scheduler | scheduled task |
-| UC-11 | Выпустить | Worker | target наступил, повторный preflight успешен | все платформы public | receipts/events |
+| UC-10 | Поставить выпуск в отложку | Worker | общий preflight успешен | YouTube и Дзен нативно запланированы, Telegram task зарегистрирована в DB и Task Scheduler | remote schedules, scheduled task |
+| UC-11 | Выпустить | Worker/площадки | target наступил, повторный preflight успешен | все платформы public | receipts/events |
 | UC-12 | Восстановить частичный выпуск | Worker | одна или две платформы public | опубликованы только отсутствующие | retry attempts |
 | UC-13 | Показать статус | Codex | есть active release либо release_id | показано одно следующее действие | отсутствует |
 | UC-14 | Изменить target | Автор | публикация ещё не началась | старая task отменена, новая создана | history |
@@ -146,8 +146,8 @@ UC-ID. Скрытые side effects запрещены. Новый сценари
 | awaiting_recording | video_processing | UC-06 | Worker | ровно один стабильный source, 5:00–10:00 |
 | video_processing | final_pending | UC-07 | Worker | render и QC успешны |
 | final_pending | publication_preparing | approve final | Автор | утверждены master, Telegram-копия, cover, metadata, posts и local Dzen preview; target задан и показан, но не входит в content hash |
-| publication_preparing | scheduled | UC-09/10 | Worker | три prepare checks успешны |
-| scheduled | publishing | target job | Worker | повторный общий preflight успешен |
+| publication_preparing | scheduled | UC-09/10 | Worker | YouTube и Дзен armed на target, Telegram task создана, три prepare checks успешны |
+| scheduled | publishing | target/provider transition | Worker/площадки | повторный общий preflight успешен либо нативная отложка наступила |
 | publishing | published | UC-11 | Worker | три publication state = public |
 | publishing | recovering | первый public + ошибка другой площадки | Worker | missing set непуст |
 | recovering | published | UC-12 | Worker | missing set пуст |
@@ -183,10 +183,12 @@ invalidation до side effect: `→ cancelled`. Lease и outcome записыв�
 
 ### Platform publication
 
-`absent → preparing → prepared → publishing → public`; дополнительно
-`retry_wait`, `failed`, `cancelled`. `public` необратим автоматически. В v1
-площадки не получают native publish schedule: `scheduled` — локальная Windows
-task, поэтому выключенный ноутбук не выпустит только часть материалов.
+`absent → preparing → prepared → armed → publishing → public`; дополнительно
+`retry_wait`, `failed`, `cancelled`. `public` необратим автоматически. Для
+YouTube и Дзена `armed` означает подтверждённую нативную отложку на target, для
+Telegram — durable job в SQLite и Windows Task Scheduler. После возобновления
+worker сверяет удалённое состояние: нативные площадки могли стать public, даже
+если ноутбук был выключен.
 
 ### Notification
 
@@ -216,7 +218,7 @@ validated `payload`.
 | RecordingAccepted.v1 | source импортирован | artifact_id, duration | audit/read model |
 | VideoValidated.v1 | QC успешен | master_id, telegram_copy_id, qc_id | audit/read model |
 | PublicationPrepared.v1 | площадка готова | platform, remote_id, known_url | audit/read model |
-| PublicationStarted.v1 | начался target run | target_at, platform order | audit/read model |
+| PublicationStarted.v1 | наступил target или началась reconciliation | target_at, trigger, armed platforms | audit/read model |
 | PlatformPublished.v1 | площадка public | platform, remote_id, public_url, public_at | audit/read model |
 | RecoveryExhausted.v1 | retry исчерпан | platform, error_code | audit/read model |
 | DeploymentCompleted.v1 | обновление завершено | app_version, commit_sha | audit/read model |
@@ -486,18 +488,18 @@ Deny by default: не указанная пара actor+command запрещен
 |---|---|---|---|---|
 | Codex | project directory + skill | command_id | CLI JSON result | chat history не доверяется |
 | Recording inbox | подтверждённый Windows path | file fingerprint | accepted artifact | только новые stable files после gate |
-| YouTube | channel OAuth | video_id | API state/public URL | private prepare, public at local target |
-| Dzen | local browser profile | draft URL/DOM identity | preview screenshot + public URL | Playwright page objects, no CAPTCHA bypass |
+| YouTube | channel OAuth | video_id | API state/public URL | private prepare, native `publishAt` |
+| Dzen | local browser profile | scheduled material URL/DOM identity | preview screenshot + schedule/public state | Playwright page objects, no CAPTCHA bypass |
 | Telegram channel | bot admin rights | message_id | Bot API response | native video + caption one message |
 | Telegram alert | bot + user ID 276042853 | notification_id | Bot API response | local incident remains if bot unavailable |
 | GitHub | public repo `t0uchY233/veselkov-smm-agent` | commit/tag/run | checks + release manifest | no secrets, runtime или unpublished release content |
 
-YouTube private video получает стабильный URL при prepare. Dzen adapter должен
-доказать на реальном аккаунте, когда появляется material URL. Если URL доступен
-только после public, target coordinator публикует Дзен первым и считывает URL.
-Telegram всегда публикуется последним, только после подтверждённого public
-состояния YouTube и Дзена, чтобы обе ссылки уже открывались. Если Dzen URL
-известен заранее, YouTube и Дзен можно переводить в public параллельно.
+YouTube private video получает стабильный URL при prepare. При создании
+отложенной публикации Дзен уже выдаёт рабочую ссылку на будущий материал. Dzen
+adapter сохраняет её, подтверждает соответствие нужному draft и target, после
+чего formatter подставляет ссылки Дзена и YouTube в заранее утверждённые места
+Telegram caption. Отсутствующая или изменившаяся ссылка блокирует постановку
+Telegram в расписание. Ждать public-состояния Дзена для сборки caption не нужно.
 
 Telegram cloud Bot API принимает video upload до 50 MB, local Bot API — до
 2000 MB. V1 сначала создаёт `telegram-video.mp4` размером не более 49,000,000
@@ -554,12 +556,15 @@ Revision сохраняет предыдущие artifacts и invalidates downst
 
 Один worker выполняет максимум один CPU-heavy media job и до трёх network jobs.
 Job выбирается по due_at и priority; AI не выбирает очередь. Lease — 60 секунд,
-heartbeat — 20 секунд. Publication preflight job создаётся на T−30 минут, target
-job — на T. Windows Task Scheduler обе задачи получает с `WakeToRun=true`.
+heartbeat — 20 секунд. Publication preflight job создаётся на T−30 минут, а
+Telegram send/reconciliation job — на T. Windows Task Scheduler обе задачи
+получает с `WakeToRun=true`.
 
-Если ноутбук выключен и ни одна площадка не public, при следующем запуске target
-job переводит Выпуск в delayed и ничего не публикует. Если публикация уже
-частичная, запускается recovery.
+Если T−30 preflight неуспешен до наступления target, worker отменяет нативные
+отложки YouTube и Дзена, отменяет Telegram task и переводит Выпуск в delayed.
+Если ноутбук был выключен и нативная отложка уже сработала, при следующем
+запуске reconciliation обнаруживает частичный выпуск и отправляет только
+отсутствующий Telegram-пост без дубля.
 
 ## 23. Dedupe, Merge And Conflict Rules
 
@@ -729,11 +734,12 @@ ASR assets; installer скачивает только эти версии и п�
 Windows Task Scheduler:
 
 - worker task стартует at logon и перезапускается после failure;
-- T−30 и T tasks создаются для каждого scheduled Выпуска;
+- T−30 preflight и T Telegram/reconciliation tasks создаются для каждого Выпуска;
 - tasks разрешены при logged-off user и используют `WakeToRun=true`;
 - deployment acceptance обязана реально проверить wake из sleep на ноутбуке;
-- powered-off laptop не может быть разбужен, поэтому все platform publishes
-  остаются локальными до target, а missed run становится delayed.
+- powered-off laptop не может быть разбужен: YouTube и Дзен всё равно могут
+  опубликоваться по нативному расписанию, а Telegram будет восстановлен после
+  запуска ноутбука; этот частичный сценарий создаёт incident.
 
 Microsoft подтверждает time triggers и `WakeToRun` в
 [Task Scheduler documentation](https://learn.microsoft.com/en-us/windows/win32/taskschd/task-triggers)
@@ -849,7 +855,7 @@ package smoke, независимый review evidence и человеческо�
   deployment benchmark, иначе production not ready.
 - Worker starts ≤60 seconds after Windows logon or scheduled wake.
 - T−30 preflight starts within ±60 seconds when laptop is in supported sleep.
-- Target publish coordinator starts within ±30 seconds.
+- Telegram target job starts within ±30 seconds when the laptop is available.
 - Visible publication drift target ≤5 minutes; большее значение создаёт incident.
 - Disk admission requires free space ≥3× source size + 2 GiB; это вычисляемое
   правило, не фиксированный размер диска.
@@ -874,8 +880,8 @@ rollback проверены; spec/ADR обновлены при изменени
 | Codex UI + deterministic local app | prompt-only orchestration | Codex создаёт content, код охраняет state/gates |
 | Один SQLite source of truth | JSON+JSONL+SQLite state | atomic state/jobs/outbox и проще recovery |
 | Windows-native worker | обязательные Docker/WSL2 | меньше startup/file/browser failures на ноутбуке |
-| Local scheduled publish coordinator | смешение native platform schedules | если laptop off, не выйдет только часть платформ |
-| YouTube private upload | заранее public/scheduled | URL известен, content остаётся непубличным до target |
+| Native YouTube/Dzen schedules + local Telegram task | полностью локальный publish coordinator | ссылки известны заранее, а две площадки не зависят от бодрствования ноутбука; Telegram остаётся локальным риском |
+| YouTube private upload + `publishAt` | локальный public transition | URL известен, content остаётся непубличным до target |
 | Telegram ≤49 MB derivative | обязательный Local Bot API Server | меньше deployment complexity при том же монтаже |
 | Playwright Dzen adapter | выдуманный официальный API | v1 возможен только после real capability smoke |
 | Codex built-ins for content | сторонние AI API | соблюдает выбранный пользователем AI-контур |
@@ -891,9 +897,9 @@ rollback проверены; spec/ADR обновлены при изменени
 |---|---|---|---|
 | Windows recording inbox path и crop profile | setup на ноутбуке | одна выделенная папка, Автор слева | scan диска и production render |
 | Offline ASR model/threshold | media tracer bullet + calibration fixtures | local-only, monotonic anchors | auto-render при low confidence |
-| Dzen URL timing/selectors/native behavior | первый Dzen tracer bullet на real account | no bypass, adapter isolated | обещать end-to-end publication readiness |
+| Dzen selectors и scheduled-link contract | первый Dzen tracer bullet на real account | отложка обязана вернуть стабильную ссылку до target; no bypass, adapter isolated | обещать end-to-end publication readiness |
 | Telegram readability при 49 MB | media benchmark на 10-minute fixture | тот же edit/audio content | скрыто ухудшать визуалы или превышать cloud limit |
-| Wake-from-sleep capability | deployment smoke на ноутбуке | no native platform scheduling in v1 | production scheduling |
+| Wake-from-sleep capability | deployment smoke на ноутбуке | Telegram остаётся локальной scheduled task | production scheduling |
 | Backup root | setup Sardor | update backup обязателен | production update |
 | Второй GitHub reviewer account | когда будет добавлен collaborator | PR, CI и review evidence уже обязательны | включать required approval, блокирующий owner PR |
 | Реальные credentials | staging/production setup | Credential Manager, least privilege | хранить их в Git или config.toml |
@@ -902,13 +908,15 @@ rollback проверены; spec/ADR обновлены при изменени
 
 - Windows 11 laptop имеет x64 CPU и может запускать Task Scheduler jobs.
 - Автор сохраняет запись в выбранную папку и не выключает ноутбук намеренно до
-  завершения подготовки; выключение всё равно безопасно приводит к delayed.
+  завершения подготовки; при выключении около target возможен частичный выпуск
+  YouTube/Дзен без Telegram, который затем восстанавливается без дублей.
 - Bot имеет право публиковать в Telegram channel, YouTube OAuth связан с нужным
   каналом, Sardor может один раз войти в Dzen.
 
 ### Open Questions
 
-Критических продуктовых вопросов для начала plan нет. Deferred items выше
+Критических продуктовых вопросов для начала plan нет. Spec 0.2.1 принят Sardor
+3 сентября 2026 года с уточнением контракта отложенной ссылки Дзена. Deferred items выше
 решаются отдельными tracer bullets до объявления production-ready.
 
 ## 38. Final Rule
@@ -918,7 +926,9 @@ rollback проверены; spec/ADR обновлены при изменени
 
 ## Spec acceptance
 
-- Decision: pending
-- Date: pending
-- Notes: версия 0.2.0 заменяет 0.1.0 после hardening-review. До человеческого
-  принятия нельзя создавать implementation `plan.md` или писать production code.
+- Decision: accepted
+- Date: 2026-09-03
+- Decider: Sardor
+- Notes: версия 0.2.1 принята после hardening-review и доменного уточнения:
+  отложенная публикация Дзена заранее предоставляет рабочую ссылку, которая
+  подставляется в Telegram caption до постановки Telegram в расписание.
