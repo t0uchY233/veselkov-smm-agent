@@ -13,6 +13,7 @@ gates на изолированных non-production ресурсах.
 - `recording_inbox`: одна папка, куда Сергей Николаевич сохраняет исходное видео.
 - `portrait_reference_dir`: папка утверждённых референсов Сергея Николаевича.
 - `dzen.browser_profile`: выделенный browser profile для ручной Dzen-сессии.
+- `dzen.author_identity`: точное имя автора, которое подтверждает эта Dzen-сессия.
 - `data_root`: закрытая runtime-папка SQLite и артефактов.
 - `backup_root`: отдельная backup-папка; её отсутствие не мешает обычному Выпуску,
   но блокирует production update.
@@ -30,6 +31,10 @@ gates на изолированных non-production ресурсах.
 пароли, Telegram bot token, OAuth JSON, cookies и переменные окружения. Для
 YouTube и Telegram указывается только ссылка формата
 `windows-credential:<target>`.
+
+`dzen.author_identity` не является логином или секретом. Это точная identity
+автора в проверенной Dzen Studio сессии; worker связывает с ней каждый durable
+receipt и не подменяет похожим каналом.
 
 В `schedule.run_as_user` укажите Windows setup account явно. Он должен
 совпадать с account, под которым запускаются setup и worker. Укажите также

@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from smm_agent.adapters.publishing.dzen_page import DzenPage
+from smm_agent.adapters.publishing.dzen import DzenPublisher
+from smm_agent.adapters.publishing.dzen_receipts import JsonDzenReceiptStore
 from smm_agent.adapters.secrets.credential_manager import CredentialAvailability
 from smm_agent.adapters.secrets.secret_reader import SecretValue
 from smm_agent.adapters.windows.task_scheduler import (
@@ -134,9 +135,9 @@ class FakeProviderBindings:
         del config, secrets
         return FakeHttpTransport()
 
-    def dzen_page(self, *, config: SmmAgentConfig) -> DzenPage:
-        del config
-        return DzenPage(FakeDzenSession())
+    def dzen_session(self, *, config: SmmAgentConfig) -> FakeDzenSession:
+        assert config.dzen.author_identity == "veselkoveconomy"
+        return FakeDzenSession()
 
     def alert_transport(
         self, *, config: SmmAgentConfig, secrets: FakeSecretReader
@@ -192,6 +193,7 @@ def _configured_resources(root: Path) -> SmmAgentConfig:
             },
             "dzen": {
                 "channel_url": "https://dzen.ru/ekonomikadliavseh",
+                "author_identity": "veselkoveconomy",
                 "browser_profile": str(root / "dzen-profile"),
             },
             "telegram": {
@@ -228,6 +230,7 @@ def test_capability_report_is_typed_and_does_not_claim_live_production(tmp_path:
     assert {item.name for item in report.capabilities} >= {
         "runtime.data_root",
         "dzen.browser_profile",
+        "dzen.author_identity",
         "windows.task_scheduler",
         "youtube.credential_ref",
         "telegram.bot_credential_ref",
@@ -398,3 +401,11 @@ def test_provider_factory_requires_explicit_production_gate_and_uses_injected_se
 
     assert set(runtime.publishers) == {"youtube", "dzen", "telegram"}
     assert runtime.capability_label == "windows-live-provider-bindings"
+
+    dzen = runtime.publishers["dzen"]
+    assert isinstance(dzen, DzenPublisher)
+    assert dzen._page.expected_identity is not None
+    assert dzen._page.expected_identity.channel_url == config.dzen.channel_url
+    assert dzen._page.expected_identity.author_identity == config.dzen.author_identity
+    assert isinstance(dzen._receipt_store, JsonDzenReceiptStore)
+    assert dzen._receipt_store._path == database.data_root / "state/dzen-receipts.json"

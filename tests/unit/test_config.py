@@ -36,6 +36,7 @@ def config_payload(root: Path) -> dict[str, object]:
         },
         "dzen": {
             "channel_url": "https://dzen.ru/ekonomikadliavseh",
+            "author_identity": "veselkoveconomy",
             "browser_profile": str(root / "dzen-profile"),
         },
         "telegram": {
@@ -76,6 +77,26 @@ def test_config_pins_v1_alert_recipient(tmp_path: Path) -> None:
     telegram["alert_recipient_id"] = "999"
 
     with pytest.raises(ValidationError, match="276042853"):
+        SmmAgentConfig.model_validate(payload)
+
+
+def test_config_requires_explicit_dzen_author_identity(tmp_path: Path) -> None:
+    payload = config_payload(tmp_path)
+    dzen = payload["dzen"]
+    assert isinstance(dzen, dict)
+    dzen["author_identity"] = " author\nidentity "
+
+    with pytest.raises(ValidationError, match="author_identity"):
+        SmmAgentConfig.model_validate(payload)
+
+
+def test_config_requires_dzen_author_identity(tmp_path: Path) -> None:
+    payload = config_payload(tmp_path)
+    dzen = payload["dzen"]
+    assert isinstance(dzen, dict)
+    del dzen["author_identity"]
+
+    with pytest.raises(ValidationError, match="author_identity"):
         SmmAgentConfig.model_validate(payload)
 
 

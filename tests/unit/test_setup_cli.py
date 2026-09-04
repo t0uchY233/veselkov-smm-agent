@@ -53,6 +53,7 @@ channel_id = "youtube-channel"
 credential_ref = "windows-credential:VeselkovSmmAgent/YouTubeOAuth"
 [dzen]
 channel_url = "https://dzen.ru/ekonomikadliavseh"
+author_identity = "veselkoveconomy"
 browser_profile = "{root / "dzen-profile"}"
 [telegram]
 channel_id = "@veselkoveconomy"

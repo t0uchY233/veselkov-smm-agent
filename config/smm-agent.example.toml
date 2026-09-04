@@ -33,6 +33,8 @@ credential_ref = "windows-credential:VeselkovSmmAgent/YouTubeOAuth"
 
 [dzen]
 channel_url = "https://dzen.ru/ekonomikadliavseh"
+# Exact identity shown by the verified Dzen Studio session; it is not a login or secret.
+author_identity = "CONFIGURE_DZEN_AUTHOR_IDENTITY"
 browser_profile = 'C:\VeselkovSmm\CONFIGURE\dzen-browser-profile'
 
 [telegram]

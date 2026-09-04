@@ -144,6 +144,7 @@ class YouTubeConfig(StrictConfigModel):
 
 class DzenConfig(StrictConfigModel):
     channel_url: str
+    author_identity: str = Field(min_length=1, max_length=256)
     browser_profile: ExplicitPath
 
     @field_validator("channel_url")
@@ -152,6 +153,13 @@ class DzenConfig(StrictConfigModel):
         parsed = urlparse(value)
         if parsed.scheme != "https" or parsed.netloc.lower() not in {"dzen.ru", "www.dzen.ru"}:
             raise ValueError("Dzen channel_url должен быть HTTPS URL домена dzen.ru.")
+        return value
+
+    @field_validator("author_identity")
+    @classmethod
+    def validate_author_identity(cls, value: str) -> str:
+        if value != value.strip() or any(character in value for character in "\x00\r\n"):
+            raise ValueError("Dzen author_identity должен быть явной непустой строкой.")
         return value
 
 

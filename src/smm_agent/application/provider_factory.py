@@ -12,8 +12,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol, cast
 
-from smm_agent.adapters.publishing.dzen import DzenPublisher
+from smm_agent.adapters.publishing.dzen import DzenPublisher, DzenSession
 from smm_agent.adapters.publishing.dzen_page import DzenPage
+from smm_agent.adapters.publishing.dzen_receipts import JsonDzenReceiptStore
 from smm_agent.adapters.publishing.http import (
     HttpTransport,
     TelegramBotHttpsTransport,
@@ -103,7 +104,7 @@ class LiveProviderBindings(Protocol):
         self, *, config: SmmAgentConfig, secrets: SecretReader
     ) -> HttpTransport: ...
 
-    def dzen_page(self, *, config: SmmAgentConfig) -> DzenPage: ...
+    def dzen_session(self, *, config: SmmAgentConfig) -> DzenSession: ...
 
     def alert_transport(
         self, *, config: SmmAgentConfig, secrets: SecretReader
@@ -155,7 +156,18 @@ class WindowsProviderFactory:
                 database.data_root / "state/youtube-upload-receipts.json"
             ),
         )
-        dzen = DzenPublisher(self._bindings.dzen_page(config=config))
+        dzen = DzenPublisher(
+            DzenPage(
+                self._bindings.dzen_session(config=config),
+                expected_channel_url=config.dzen.channel_url,
+                expected_author_identity=config.dzen.author_identity,
+            ),
+            expected_channel_url=config.dzen.channel_url,
+            expected_author_identity=config.dzen.author_identity,
+            receipt_store=JsonDzenReceiptStore(
+                database.data_root / "state/dzen-receipts.json"
+            ),
+        )
         telegram = TelegramPublisher(
             transport=TelegramBotHttpsTransport(
                 credential=_TelegramCredential(

@@ -54,6 +54,11 @@ class CapabilityService:
             self._file("media.crop_profile", config.media.crop_profile),
             self._file("schedule.worker_executable", config.schedule.worker_executable),
             self._directory("dzen.browser_profile", config.dzen.browser_profile, required=True),
+            CapabilityCheck(
+                name="dzen.author_identity",
+                state="available",
+                message="Dzen author identity прошла schema validation и привязана к config.",
+            ),
             self._log_directory(config.observability.log_path),
             self._scheduler(),
             *self._security_inspector.inspect(
