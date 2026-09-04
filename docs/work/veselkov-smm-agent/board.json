@@ -70,9 +70,9 @@
    ],
    "tier": "T3",
    "doc": "plan.md",
-   "status": "open",
-   "claimedAt": null,
-   "doneAt": null
+   "status": "done",
+   "claimedAt": "2026-09-04T10:11:24+00:00",
+   "doneAt": "2026-09-04T10:41:59+00:00"
   },
   "slice6/capabilities": {
    "title": "Real provider and Windows capability checks",

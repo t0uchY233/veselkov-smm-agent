@@ -91,7 +91,7 @@ owner: Sardor
 - **Out of scope:** реальные credentials и production channels.
 - **Blocked by:** Slices 1–3.
 
-### Slice 5: Частичный выпуск восстанавливается без дублей
+### Slice 5: Частичный выпуск восстанавливается без дублей — реализован
 
 - **Delivers:** durable jobs, leases, retry taxonomy, reconciliation и alert
   Sardor `276042853` после исчерпания recovery.
@@ -102,6 +102,11 @@ owner: Sardor
   платформу; повтор отправляет только missing; public автоматически не удаляется.
 - **Out of scope:** Windows packaging.
 - **Blocked by:** Slice 4.
+
+Реализовано и проверено в `evidence/slice-05.md`: fenced job leases и heartbeat,
+точные retry policies, status-first recovery без замены public receipts,
+атомарные incident/alert jobs и уведомление Sardor `276042853`. Независимый
+review закрыт; следующий срез — Slice 6.
 
 ### Slice 6: Реальные capability checks площадок и Windows
 
