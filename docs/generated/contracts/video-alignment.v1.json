@@ -1,0 +1,127 @@
+{
+  "$defs": {
+    "AnchorMatch": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor_text": {
+          "title": "Anchor Text",
+          "type": "string"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "timestamp": {
+          "minimum": 0,
+          "title": "Timestamp",
+          "type": "number"
+        },
+        "transcript_end_index": {
+          "minimum": 0,
+          "title": "Transcript End Index",
+          "type": "integer"
+        },
+        "transcript_start_index": {
+          "minimum": 0,
+          "title": "Transcript Start Index",
+          "type": "integer"
+        },
+        "visual_id": {
+          "title": "Visual Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "visual_id",
+        "anchor_text",
+        "timestamp",
+        "confidence",
+        "transcript_start_index",
+        "transcript_end_index"
+      ],
+      "title": "AnchorMatch",
+      "type": "object"
+    },
+    "TimelineEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "end": {
+          "exclusiveMinimum": 0,
+          "title": "End",
+          "type": "number"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "number"
+        },
+        "visual_id": {
+          "title": "Visual Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "visual_id",
+        "start",
+        "end"
+      ],
+      "title": "TimelineEntry",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "confidence_threshold": {
+      "exclusiveMinimum": 0,
+      "maximum": 1,
+      "title": "Confidence Threshold",
+      "type": "number"
+    },
+    "fullscreen_until": {
+      "minimum": 0,
+      "title": "Fullscreen Until",
+      "type": "number"
+    },
+    "matches": {
+      "items": {
+        "$ref": "#/$defs/AnchorMatch"
+      },
+      "maxItems": 5,
+      "minItems": 1,
+      "title": "Matches",
+      "type": "array"
+    },
+    "minimum_confidence": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Minimum Confidence",
+      "type": "number"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "timeline": {
+      "items": {
+        "$ref": "#/$defs/TimelineEntry"
+      },
+      "maxItems": 5,
+      "minItems": 1,
+      "title": "Timeline",
+      "type": "array"
+    }
+  },
+  "required": [
+    "confidence_threshold",
+    "minimum_confidence",
+    "fullscreen_until",
+    "matches",
+    "timeline"
+  ],
+  "title": "AlignmentResult",
+  "type": "object"
+}

@@ -12,11 +12,13 @@ from typer._click.exceptions import ClickException
 
 from smm_agent.adapters.editorial.docx_builder import PythonDocxBuilder
 from smm_agent.adapters.editorial.image_inspector import PillowImageInspector
+from smm_agent.adapters.media.ffmpeg import FFmpegMediaTool
 from smm_agent.application.editorial_service import (
     decide_gate,
     import_editorial,
     import_plan,
     request_revision,
+    set_publication_target,
 )
 from smm_agent.application.release_service import (
     IdempotencyConflict,
@@ -26,15 +28,20 @@ from smm_agent.application.release_service import (
     get_release_status,
     utc_request_id,
 )
+from smm_agent.application.setup_service import accept_media_profile
+from smm_agent.application.video_service import select_recording_candidate
 from smm_agent.contracts.cli import ErrorDetail, ErrorResponse
 from smm_agent.contracts.editorial import EditorialBundle, PlanDocument
+from smm_agent.contracts.video import AlignmentProfile
 from smm_agent.domain.release import ReleaseConflict
 from smm_agent.platform.config import default_data_root
 from smm_agent.platform.db import Database
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 release_app = typer.Typer(add_completion=False, no_args_is_help=True)
+setup_app = typer.Typer(add_completion=False, no_args_is_help=True)
 app.add_typer(release_app, name="release")
+app.add_typer(setup_app, name="setup")
 
 
 class GateChoice(StrEnum):
@@ -110,6 +117,32 @@ def _mutation_failure(error: Exception, command_id: str) -> NoReturn:
             reason=str(error),
         )
     _validation_failure(error)
+
+
+@setup_app.command("accept-media-profile")
+def setup_accept_media_profile(
+    profile_path: Annotated[
+        Path, typer.Option("--profile", exists=True, dir_okay=False)
+    ],
+    confirmation: Annotated[str, typer.Option("--confirmation")],
+    actor: Annotated[str, typer.Option("--actor")] = "operator",
+    data_root: Annotated[Path | None, typer.Option("--data-root")] = None,
+) -> None:
+    """Persist explicit operator acceptance of one exact machine profile."""
+    try:
+        profile = AlignmentProfile.model_validate_json(
+            profile_path.read_text(encoding="utf-8")
+        )
+        result = accept_media_profile(
+            _database(data_root),
+            profile=profile,
+            actor=actor,
+            confirmation=confirmation,
+        )
+    except (ValidationError, ValueError, UnicodeDecodeError, OSError) as error:
+        _validation_failure(error)
+    else:
+        _emit(result)
 
 
 @release_app.command("start")
@@ -282,6 +315,59 @@ def release_revise(
             actor=actor,
             target=target,
             reason=reason,
+        )
+    except (IdempotencyConflict, StateConflict, ValueError) as error:
+        _mutation_failure(error, command_id)
+    else:
+        _emit(result)
+
+
+@release_app.command("select-recording")
+def release_select_recording(
+    command_id: Annotated[str, typer.Option("--command-id")],
+    expected_revision: Annotated[int, typer.Option("--expected-revision", min=1)],
+    candidate_id: Annotated[str, typer.Option("--candidate-id")],
+    inbox: Annotated[Path, typer.Option("--inbox", exists=True, file_okay=False)],
+    actor: Annotated[str, typer.Option("--actor")],
+    ffmpeg: Annotated[str, typer.Option("--ffmpeg")] = "ffmpeg",
+    ffprobe: Annotated[str, typer.Option("--ffprobe")] = "ffprobe",
+    data_root: Annotated[Path | None, typer.Option("--data-root")] = None,
+) -> None:
+    """UC-06: bind the Author's explicit choice to one ambiguous candidate."""
+    try:
+        result = select_recording_candidate(
+            _database(data_root),
+            command_id=command_id,
+            expected_revision=expected_revision,
+            actor=actor,
+            candidate_id=candidate_id,
+            inbox=inbox,
+            media_tool=FFmpegMediaTool(ffmpeg=ffmpeg, ffprobe=ffprobe),
+        )
+    except (IdempotencyConflict, StateConflict, ValueError, OSError) as error:
+        _mutation_failure(error, command_id)
+    else:
+        _emit(result)
+
+
+@release_app.command("set-target")
+def release_set_target(
+    command_id: Annotated[str, typer.Option("--command-id")],
+    expected_revision: Annotated[int, typer.Option("--expected-revision", min=1)],
+    target_at: Annotated[str, typer.Option("--target-at")],
+    actor: Annotated[str, typer.Option("--actor")],
+    timezone: Annotated[str, typer.Option("--timezone")] = "Europe/Moscow",
+    data_root: Annotated[Path | None, typer.Option("--data-root")] = None,
+) -> None:
+    """UC-08: bind a future publication time before final approval."""
+    try:
+        result = set_publication_target(
+            _database(data_root),
+            command_id=command_id,
+            expected_revision=expected_revision,
+            actor=actor,
+            target_at=target_at,
+            timezone=timezone,
         )
     except (IdempotencyConflict, StateConflict, ValueError) as error:
         _mutation_failure(error, command_id)

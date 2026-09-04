@@ -24,6 +24,7 @@ dev = [
 
 [project.scripts]
 smmctl = "smm_agent.cli.main:main"
+smm-worker = "smm_agent.worker.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/smm_agent"]

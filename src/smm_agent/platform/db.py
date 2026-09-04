@@ -59,6 +59,7 @@ class Database:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA busy_timeout = 30000")
         try:
             yield connection
         finally:
@@ -183,6 +184,35 @@ class Database:
         return expected_revision + 1
 
     @staticmethod
+    def set_release_target(
+        connection: sqlite3.Connection,
+        *,
+        release_id: str,
+        expected_revision: int,
+        target_at_utc: str,
+        target_timezone: str,
+        updated_at: str,
+    ) -> int:
+        cursor = connection.execute(
+            """
+            UPDATE releases
+            SET target_at_utc = ?, target_timezone = ?, revision = revision + 1,
+                updated_at = ?
+            WHERE release_id = ? AND revision = ? AND state = 'final_pending'
+            """,
+            (
+                target_at_utc,
+                target_timezone,
+                updated_at,
+                release_id,
+                expected_revision,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError("stale release revision")
+        return expected_revision + 1
+
+    @staticmethod
     def add_transition(
         connection: sqlite3.Connection,
         *,
@@ -286,6 +316,7 @@ class Database:
         gate: str,
         release_revision: int,
         artifact_set_hash: str,
+        artifacts: list[dict[str, object]],
         created_at: str,
     ) -> None:
         connection.execute(
@@ -297,6 +328,16 @@ class Database:
             """,
             (approval_id, release_id, gate, release_revision, artifact_set_hash, created_at),
         )
+        connection.executemany(
+            """
+            INSERT INTO approval_artifacts (approval_id, artifact_id, sha256)
+            VALUES (?, ?, ?)
+            """,
+            [
+                (approval_id, artifact["artifact_id"], artifact["sha256"])
+                for artifact in artifacts
+            ],
+        )
 
     @staticmethod
     def pending_approval(connection: sqlite3.Connection, release_id: str) -> sqlite3.Row | None:
@@ -307,6 +348,22 @@ class Database:
                 (release_id,),
             ).fetchone(),
         )
+
+    @staticmethod
+    def approval_artifact_records(
+        connection: sqlite3.Connection, approval_id: str
+    ) -> list[dict[str, object]]:
+        rows = connection.execute(
+            """
+            SELECT a.artifact_id, a.kind, a.path, aa.sha256, a.size, a.media_type
+            FROM approval_artifacts aa
+            JOIN artifact_versions a ON a.artifact_id = aa.artifact_id
+            WHERE aa.approval_id = ?
+            ORDER BY a.kind
+            """,
+            (approval_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     @staticmethod
     def decide_approval(
@@ -354,6 +411,44 @@ class Database:
         return {str(row["kind"]): str(row["path"]) for row in rows}
 
     @staticmethod
+    def latest_artifact_records(
+        connection: sqlite3.Connection, release_id: str
+    ) -> list[dict[str, object]]:
+        rows = connection.execute(
+            """
+            SELECT artifact_id, kind, path, sha256, size, media_type
+            FROM artifact_versions a
+            WHERE release_id = ? AND valid = 1 AND version = (
+                SELECT max(version) FROM artifact_versions b
+                WHERE b.release_id = a.release_id AND b.kind = a.kind AND b.valid = 1
+            )
+            ORDER BY kind
+            """,
+            (release_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def latest_artifact_record(
+        connection: sqlite3.Connection,
+        release_id: str,
+        kind: str,
+        *,
+        valid_only: bool = True,
+    ) -> dict[str, object] | None:
+        validity = "AND valid = 1" if valid_only else ""
+        row = connection.execute(
+            f"""
+            SELECT artifact_id, kind, path, sha256, size, media_type
+            FROM artifact_versions
+            WHERE release_id = ? AND kind = ? {validity}
+            ORDER BY version DESC LIMIT 1
+            """,
+            (release_id, kind),
+        ).fetchone()
+        return dict(row) if row else None
+
+    @staticmethod
     def invalidate_artifacts(
         connection: sqlite3.Connection, release_id: str, target: str
     ) -> None:
@@ -369,6 +464,14 @@ class Database:
             "cover": "kind IN ('editorial_manifest', 'cover', 'docx')",
             "metadata": "kind = 'editorial_manifest'",
             "telegram": "kind IN ('editorial_manifest', 'telegram_template')",
+            "video": (
+                "kind IN ('transcript', 'alignment', 'timeline', 'render_plan', "
+                "'master', 'telegram_video', 'video_qc', 'final_package')"
+            ),
+            "recording": (
+                "kind IN ('recording_source', 'transcript', 'alignment', 'timeline', "
+                "'render_plan', 'master', 'telegram_video', 'video_qc', 'final_package')"
+            ),
         }
         condition = conditions.get(target)
         if condition is None:
@@ -494,6 +597,39 @@ class Database:
                 json.dumps(claim_ids, ensure_ascii=False),
             ),
         )
+
+
+    @staticmethod
+    def register_media_profile(
+        connection: sqlite3.Connection,
+        *,
+        profile_sha256: str,
+        profile_json: str,
+        accepted_by: str,
+        accepted_at: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO accepted_media_profiles (
+                profile_sha256, profile_json, accepted_by, accepted_at
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(profile_sha256) DO NOTHING
+            """,
+            (profile_sha256, profile_json, accepted_by, accepted_at),
+        )
+
+    @staticmethod
+    def accepted_media_profile(
+        connection: sqlite3.Connection, profile_sha256: str
+    ) -> sqlite3.Row | None:
+        return cast(
+            sqlite3.Row | None,
+            connection.execute(
+                "SELECT * FROM accepted_media_profiles WHERE profile_sha256 = ?",
+                (profile_sha256,),
+            ).fetchone(),
+        )
+
     @staticmethod
     def save_command(
         connection: sqlite3.Connection,
@@ -532,4 +668,6 @@ def _release_from_row(row: sqlite3.Row) -> Release:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         revision_target=row["revision_target"],
+        target_at_utc=row["target_at_utc"],
+        target_timezone=row["target_timezone"],
     )

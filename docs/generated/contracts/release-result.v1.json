@@ -42,6 +42,23 @@
       "title": "State",
       "type": "string"
     },
+    "target_at_utc": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Target At Utc"
+    },
+    "target_timezone": {
+      "default": "Europe/Moscow",
+      "title": "Target Timezone",
+      "type": "string"
+    },
     "topic": {
       "title": "Topic",
       "type": "string"

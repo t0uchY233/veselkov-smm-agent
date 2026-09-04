@@ -30,4 +30,6 @@ class ReleaseResult(StrictContract):
     topic: str
     next_action: str
     pending_gate: str | None = None
+    target_at_utc: str | None = None
+    target_timezone: str = "Europe/Moscow"
     artifacts: dict[str, str] = Field(default_factory=dict)

@@ -102,6 +102,8 @@ def release_result(
         topic=release.topic,
         next_action=release.next_action,
         pending_gate=pending_gate,
+        target_at_utc=release.target_at_utc,
+        target_timezone=release.target_timezone,
         artifacts=artifacts or {},
     )
 

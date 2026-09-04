@@ -10,7 +10,7 @@ def invalidated_gates(target: str) -> tuple[str, ...]:
         return ("plan", "editorial", "final")
     if target in {"main_text", "visuals"}:
         return ("editorial", "final")
-    if target in {"cover", "metadata", "telegram"}:
+    if target in {"cover", "metadata", "telegram", "video", "recording"}:
         return ("final",)
     raise ValueError(f"Неизвестная цель правки: {target}")
 

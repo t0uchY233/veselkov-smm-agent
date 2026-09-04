@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 def run_cli(project_root: Path, data_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -76,7 +76,11 @@ def write_editorial_bundle(tmp_path: Path, *, visual_count: int = 3) -> Path:
     visuals = []
     for index, anchor in enumerate(anchors[:visual_count], start=1):
         asset = bundle / f"visual-{index}.png"
-        Image.new("RGB", (1080, 1080), color=(245, 245, 245)).save(asset)
+        visual_image = Image.new("RGB", (1080, 1080), color=(245, 245, 245))
+        visual_draw = ImageDraw.Draw(visual_image)
+        visual_draw.rectangle((80, 180, 1000, 900), fill=(220, 40, 40))
+        visual_draw.text((120, 120), anchor, fill=(10, 10, 10))
+        visual_image.save(asset)
         visuals.append(
             {
                 "visual_id": f"visual-{index}",
@@ -90,7 +94,11 @@ def write_editorial_bundle(tmp_path: Path, *, visual_count: int = 3) -> Path:
         )
 
     cover = bundle / "cover.png"
-    Image.new("RGB", (1280, 720), color=(255, 255, 255)).save(cover)
+    cover_image = Image.new("RGB", (1280, 720), color=(255, 255, 255))
+    cover_draw = ImageDraw.Draw(cover_image)
+    cover_draw.rectangle((40, 300, 760, 660), fill=(220, 20, 20))
+    cover_draw.text((60, 80), "КОНТРАКТ И ДЕНЬГИ", fill=(0, 0, 0))
+    cover_image.save(cover)
     manifest = {
         "schema_version": "1.0",
         "main_text": main_text,
@@ -149,6 +157,60 @@ def write_editorial_bundle(tmp_path: Path, *, visual_count: int = 3) -> Path:
         json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
     )
     return bundle
+
+
+def reach_editorial_pending(
+    project_root: Path, data_root: Path, tmp_path: Path
+) -> tuple[Path, dict[str, Any]]:
+    started = start_release(project_root, data_root, tmp_path)
+    plan = response(
+        run_cli(
+            project_root,
+            data_root,
+            "release",
+            "import-plan",
+            "--command-id",
+            "plan-helper",
+            "--expected-revision",
+            str(started["revision"]),
+            "--file",
+            str(write_plan(tmp_path)),
+        )
+    )
+    approved = response(
+        run_cli(
+            project_root,
+            data_root,
+            "release",
+            "decide",
+            "--command-id",
+            "approve-plan-helper",
+            "--expected-revision",
+            str(plan["revision"]),
+            "--gate",
+            "plan",
+            "--decision",
+            "approved",
+            "--actor",
+            "author",
+        )
+    )
+    bundle = write_editorial_bundle(tmp_path)
+    editorial = response(
+        run_cli(
+            project_root,
+            data_root,
+            "release",
+            "import-editorial",
+            "--command-id",
+            "editorial-helper",
+            "--expected-revision",
+            str(approved["revision"]),
+            "--bundle",
+            str(bundle),
+        )
+    )
+    return bundle, editorial
 
 
 def test_plan_and_editorial_gates_reach_awaiting_recording(tmp_path: Path) -> None:
@@ -401,3 +463,136 @@ def test_revision_invalidates_editorial_approval(tmp_path: Path) -> None:
     rebuilt_json = response(rebuilt)
     assert rebuilt_json["state"] == "editorial_pending"
     assert rebuilt_json["pending_gate"] == "editorial"
+
+
+def test_plan_gate_rejects_changed_artifact_bytes(tmp_path: Path) -> None:
+    project_root = Path(__file__).parents[2]
+    data_root = tmp_path / "data"
+    started = start_release(project_root, data_root, tmp_path)
+    imported = response(
+        run_cli(
+            project_root,
+            data_root,
+            "release",
+            "import-plan",
+            "--command-id",
+            "plan-byte-check",
+            "--expected-revision",
+            str(started["revision"]),
+            "--file",
+            str(write_plan(tmp_path)),
+        )
+    )
+    Path(imported["artifacts"]["plan"]).write_text("tampered", encoding="utf-8")
+
+    decision = run_cli(
+        project_root,
+        data_root,
+        "release",
+        "decide",
+        "--command-id",
+        "approve-tampered-plan",
+        "--expected-revision",
+        str(imported["revision"]),
+        "--gate",
+        "plan",
+        "--decision",
+        "approved",
+        "--actor",
+        "author",
+    )
+
+    assert decision.returncode == 2
+    assert response(decision)["error"]["code"] == "VALIDATION_FAILED"
+
+
+def test_editorial_gate_rejects_changed_artifact_bytes(tmp_path: Path) -> None:
+    project_root = Path(__file__).parents[2]
+    data_root = tmp_path / "data"
+    _, editorial = reach_editorial_pending(project_root, data_root, tmp_path)
+    Path(editorial["artifacts"]["main_text"]).write_text("tampered", encoding="utf-8")
+
+    decision = run_cli(
+        project_root,
+        data_root,
+        "release",
+        "decide",
+        "--command-id",
+        "approve-tampered-editorial",
+        "--expected-revision",
+        str(editorial["revision"]),
+        "--gate",
+        "editorial",
+        "--decision",
+        "approved",
+        "--actor",
+        "author",
+    )
+
+    assert decision.returncode == 2
+    assert response(decision)["error"]["code"] == "VALIDATION_FAILED"
+
+
+def test_cover_revision_cannot_replace_approved_main_text(tmp_path: Path) -> None:
+    project_root = Path(__file__).parents[2]
+    data_root = tmp_path / "data"
+    bundle, editorial = reach_editorial_pending(project_root, data_root, tmp_path)
+    awaiting = response(
+        run_cli(
+            project_root,
+            data_root,
+            "release",
+            "decide",
+            "--command-id",
+            "approve-editorial-narrow",
+            "--expected-revision",
+            str(editorial["revision"]),
+            "--gate",
+            "editorial",
+            "--decision",
+            "approved",
+            "--actor",
+            "author",
+        )
+    )
+    revision = response(
+        run_cli(
+            project_root,
+            data_root,
+            "release",
+            "revise",
+            "--command-id",
+            "revise-cover",
+            "--expected-revision",
+            str(awaiting["revision"]),
+            "--target",
+            "cover",
+            "--reason",
+            "Другая эмоция на обложке",
+            "--actor",
+            "author",
+        )
+    )
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["main_text"] += " Скрытая неподтверждённая замена."
+    manifest["humanizer"]["output_sha256"] = hashlib.sha256(
+        manifest["main_text"].encode("utf-8")
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    imported = run_cli(
+        project_root,
+        data_root,
+        "release",
+        "import-editorial",
+        "--command-id",
+        "cover-with-text-change",
+        "--expected-revision",
+        str(revision["revision"]),
+        "--bundle",
+        str(bundle),
+    )
+
+    assert imported.returncode == 2
+    assert response(imported)["error"]["code"] == "VALIDATION_FAILED"

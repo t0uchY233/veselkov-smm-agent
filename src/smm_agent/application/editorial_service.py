@@ -1,16 +1,20 @@
 """UC-03 through UC-05: editorial imports, approvals and revisions."""
 
+import json
 import mimetypes
 import sqlite3
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
 from smm_agent.application.editorial_artifacts import (
     artifact_set_hash,
     load_bundle_assets,
+    lock_artifact_records,
     store_artifact,
     validate_image_dimensions,
+    verify_artifact_records,
 )
 from smm_agent.application.editorial_support import (
     canonical_bytes,
@@ -31,9 +35,156 @@ from smm_agent.domain.editorial.ports import DocxBuilder, ImageInspector
 from smm_agent.domain.release.model import Release, ReleaseState
 from smm_agent.platform.db import Database
 from smm_agent.platform.ids import uuid7
+from smm_agent.platform.video_store import VideoStore
 
 Gate = Literal["plan", "editorial", "final"]
 Decision = Literal["approved", "rejected"]
+
+
+def set_publication_target(
+    database: Database,
+    *,
+    command_id: str,
+    expected_revision: int,
+    actor: str,
+    target_at: str,
+    timezone: str,
+) -> ReleaseResult:
+    require_actor(actor, {"author"})
+    if timezone != "Europe/Moscow":
+        raise ValueError("Для Выпуска поддерживается timezone Europe/Moscow.")
+    try:
+        parsed = datetime.fromisoformat(target_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("Время публикации должно быть ISO 8601.") from error
+    if parsed.tzinfo is None:
+        raise ValueError("Время публикации должно содержать часовой пояс.")
+    target_utc = parsed.astimezone(UTC)
+    if target_utc <= datetime.now(UTC):
+        raise ValueError("Время публикации должно быть в будущем.")
+    target_value = target_utc.isoformat().replace("+00:00", "Z")
+    request_hash = canonical_hash(
+        {
+            "actor": actor,
+            "command": "release.set-target",
+            "expected_revision": expected_revision,
+            "target_at_utc": target_value,
+            "timezone": timezone,
+        }
+    )
+    now = now_utc()
+    with database.transaction() as connection:
+        replay = _replay(database, connection, command_id, request_hash)
+        if replay:
+            return replay
+        release = _active_for_mutation(database, connection, expected_revision)
+        if release.state != "final_pending":
+            raise StateConflict("Время публикации задаётся перед финальным утверждением.")
+        approval = database.pending_approval(connection, release.release_id)
+        if approval is None or approval["gate"] != "final":
+            raise StateConflict("Нет финального комплекта для назначения времени.")
+        records = database.approval_artifact_records(
+            connection, str(approval["approval_id"])
+        )
+        verify_artifact_records(records)
+        if artifact_set_hash(records) != approval["artifact_set_hash"]:
+            raise StateConflict("Финальный комплект изменился до назначения времени.")
+        database.invalidate_approvals(connection, release.release_id, ("final",), now)
+        revision = database.set_release_target(
+            connection,
+            release_id=release.release_id,
+            expected_revision=release.revision,
+            target_at_utc=target_value,
+            target_timezone=timezone,
+            updated_at=now,
+        )
+        database.insert_approval(
+            connection,
+            approval_id=uuid7(),
+            release_id=release.release_id,
+            gate="final",
+            release_revision=revision,
+            artifact_set_hash=str(approval["artifact_set_hash"]),
+            artifacts=records,
+            created_at=now,
+        )
+        database.add_event(
+            connection,
+            event_id=uuid7(),
+            name="PublicationTargetSet.v1",
+            occurred_at=now,
+            release_id=release.release_id,
+            actor=actor,
+            payload={"target_at_utc": target_value, "target_timezone": timezone},
+        )
+        updated = replace(
+            release,
+            revision=revision,
+            updated_at=now,
+            target_at_utc=target_value,
+            target_timezone=timezone,
+        )
+        result = release_result(
+            updated,
+            pending_gate="final",
+            artifacts=database.latest_artifact_paths(connection, release.release_id),
+        )
+        _save_result(
+            database,
+            connection,
+            command_id,
+            actor,
+            "release.set-target",
+            request_hash,
+            result,
+            now,
+        )
+        return result
+
+
+def _validate_narrow_revision(
+    database: Database,
+    connection: sqlite3.Connection,
+    *,
+    release_id: str,
+    target: str,
+    bundle: EditorialBundle,
+    assets: dict[str, bytes],
+) -> None:
+    allowed_fields = {
+        "cover": {"cover_path"},
+        "metadata": {"youtube", "dzen"},
+        "telegram": {"telegram"},
+    }
+    allowed = allowed_fields.get(target)
+    if allowed is None:
+        return
+    old_record = database.latest_artifact_record(
+        connection, release_id, "editorial_manifest", valid_only=False
+    )
+    if old_record is None:
+        raise ValueError("Предыдущий редакционный Манифест не найден.")
+    old_payload = Path(str(old_record["path"])).read_bytes()
+    if sha256(old_payload) != old_record["sha256"]:
+        raise ValueError("Предыдущий редакционный Манифест повреждён.")
+    old_bundle = json.loads(old_payload)
+    new_bundle = bundle.model_dump(mode="json")
+    for field in set(old_bundle) | set(new_bundle):
+        if field not in allowed and old_bundle.get(field) != new_bundle.get(field):
+            raise ValueError(
+                f"Узкая правка {target} изменила защищённое поле {field}; "
+                "запросите соответствующую редакционную правку."
+            )
+    for visual in bundle.visuals:
+        record = database.latest_artifact_record(
+            connection, release_id, f"visual_{visual.visual_id}"
+        )
+        if record is None or sha256(assets[visual.asset_path]) != record["sha256"]:
+            raise ValueError("Узкая правка не может заменять утверждённые визуалы.")
+    if target != "cover":
+        cover = database.latest_artifact_record(connection, release_id, "cover")
+        if cover is None or sha256(assets[bundle.cover_path]) != cover["sha256"]:
+            raise ValueError("Эта правка не может заменять утверждённую обложку.")
 
 
 def import_plan(
@@ -99,6 +250,7 @@ def import_plan(
             gate="plan",
             release_revision=new_revision,
             artifact_set_hash=artifact_set_hash([artifact]),
+            artifacts=[artifact],
             created_at=now,
         )
         updated = replace(
@@ -166,6 +318,15 @@ def import_editorial(
             "main_text",
             "visuals",
         }
+        if release.state == "revision_requested" and release.revision_target:
+            _validate_narrow_revision(
+                database,
+                connection,
+                release_id=release.release_id,
+                target=release.revision_target,
+                bundle=bundle,
+                assets=assets,
+            )
         new_state: ReleaseState = (
             "editorial_pending" if needs_editorial_gate else "awaiting_recording"
         )
@@ -308,6 +469,7 @@ def import_editorial(
                 gate="editorial",
                 release_revision=new_revision,
                 artifact_set_hash=artifact_hash,
+                artifacts=records,
                 created_at=now,
             )
         database.add_event(
@@ -367,6 +529,8 @@ def decide_gate(
     }
     request_hash = canonical_hash(request)
     now = now_utc()
+    final_records: list[dict[str, Any]] = []
+    approved_records: list[dict[str, Any]] = []
 
     with database.transaction() as connection:
         replay = _replay(database, connection, command_id, request_hash)
@@ -378,6 +542,22 @@ def decide_gate(
             raise StateConflict(f"нет ожидающего gate {gate}")
         if int(approval["release_revision"]) != release.revision:
             raise StateConflict("gate относится к другой версии Выпуска")
+        if decision == "approved":
+            if gate == "final" and release.target_at_utc is None:
+                raise StateConflict("До финального утверждения задайте время публикации.")
+            final_records = database.latest_artifact_records(connection, release.release_id)
+            approved_records = database.approval_artifact_records(
+                connection, str(approval["approval_id"])
+            )
+            verify_artifact_records(approved_records)
+            if artifact_set_hash(approved_records) != approval["artifact_set_hash"]:
+                raise StateConflict("утверждаемый комплект изменился после открытия gate")
+            final_hash_changed = (
+                gate == "final"
+                and artifact_set_hash(final_records) != approval["artifact_set_hash"]
+            )
+            if final_hash_changed:
+                raise StateConflict("финальный комплект изменился после открытия gate")
 
         approved_states: dict[Gate, ReleaseState] = {
             "plan": "editorial_building",
@@ -394,6 +574,9 @@ def decide_gate(
         new_state: ReleaseState = (
             approved_states[gate] if decision == "approved" else "revision_requested"
         )
+        revision_target = (
+            "recording" if gate == "final" and decision == "rejected" else gate
+        )
 
         database.decide_approval(
             connection,
@@ -403,14 +586,22 @@ def decide_gate(
             reason=reason,
             decided_at=now,
         )
+        if decision == "approved":
+            lock_artifact_records(approved_records)
+        if gate == "final" and decision == "rejected":
+            VideoStore.invalidate_recording(connection, release.release_id)
+            database.invalidate_artifacts(connection, release.release_id, "recording")
+            VideoStore.reset_recording_window(connection, release.release_id, now)
         new_revision = database.update_release(
             connection,
             release_id=release.release_id,
             expected_revision=release.revision,
             state=new_state,
             updated_at=now,
-            revision_target=gate if decision == "rejected" else None,
+            revision_target=revision_target if decision == "rejected" else None,
         )
+        if gate == "editorial" and decision == "approved":
+            VideoStore.open_recording_window(connection, release.release_id, now)
         database.add_transition(
             connection,
             transition_id=uuid7(),
@@ -439,7 +630,7 @@ def decide_gate(
             state=new_state,
             revision=new_revision,
             updated_at=now,
-            revision_target=gate if decision == "rejected" else None,
+            revision_target=revision_target if decision == "rejected" else None,
         )
         result = release_result(
             updated,
@@ -486,12 +677,28 @@ def request_revision(
         if replay:
             return replay
         release = _active_for_mutation(database, connection, expected_revision)
-        if release.state not in {"plan_pending", "editorial_pending", "awaiting_recording"}:
+        if release.state not in {
+            "plan_pending",
+            "editorial_pending",
+            "awaiting_recording",
+            "video_processing",
+            "final_pending",
+            "needs_attention",
+        }:
             raise StateConflict(f"нельзя запросить правку из состояния {release.state}")
         if release.state == "plan_pending" and target != "plan":
             raise StateConflict("до утверждения плана можно править только план")
+        if release.state == "final_pending" and target not in {"recording", "video"}:
+            raise StateConflict("на финальном gate можно исправить запись или монтаж")
+        if release.state == "video_processing" and target not in {"recording", "video"}:
+            raise StateConflict("во время монтажа можно отозвать запись или результат монтажа")
+        if release.state == "needs_attention" and target != release.revision_target:
+            raise StateConflict("исправление должно соответствовать отчёту video_issue")
         database.invalidate_approvals(connection, release.release_id, gates, now)
         database.invalidate_artifacts(connection, release.release_id, target)
+        if target == "recording":
+            VideoStore.invalidate_recording(connection, release.release_id)
+            VideoStore.reset_recording_window(connection, release.release_id, now)
         new_revision = database.update_release(
             connection,
             release_id=release.release_id,
@@ -579,4 +786,3 @@ def _save_result(
         outcome=result.model_dump(mode="json", by_alias=True),
         occurred_at=now,
     )
-

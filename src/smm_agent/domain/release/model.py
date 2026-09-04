@@ -32,9 +32,13 @@ class Release:
     created_at: str
     updated_at: str
     revision_target: str | None = None
+    target_at_utc: str | None = None
+    target_timezone: str = "Europe/Moscow"
 
     @property
     def next_action(self) -> str:
+        if self.state == "revision_requested" and self.revision_target == "recording":
+            return "Сохранить новую запись в настроенную папку для повторного монтажа."
         actions = {
             "topic_received": "Подготовить и показать Сергею Николаевичу план выпуска.",
             "plan_pending": "Попросить Сергея Николаевича утвердить план или дать правки.",
@@ -52,6 +56,8 @@ class Release:
             "revision_requested": "Исправить указанный материал и импортировать новую версию.",
             "recovering": "Дождаться восстановления отсутствующей публикации.",
             "delayed": "Устранить причину задержки и выбрать новое время.",
-            "needs_attention": "Передать Sardor диагностический код неисправности.",
+            "needs_attention": (
+                "Открыть отчёт video_issue и выполнить указанное безопасное действие."
+            ),
         }
         return actions[self.state]
