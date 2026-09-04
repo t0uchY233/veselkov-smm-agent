@@ -9,8 +9,13 @@ from smm_agent.adapters.secrets.credential_manager import (
     CredentialStore,
     WindowsCredentialManager,
 )
+from smm_agent.adapters.windows.security import WindowsAclInspector, WindowsSecurityInspector
 from smm_agent.contracts.setup import CapabilityCheck, CapabilityReport
 from smm_agent.platform.config import SmmAgentConfig
+
+
+class RuntimeCapabilityUnavailable(RuntimeError):
+    """Configuration exists but cannot safely start a live worker."""
 
 
 class CapabilityService:
@@ -24,10 +29,14 @@ class CapabilityService:
         self,
         *,
         credential_store: CredentialStore | None = None,
+        security_inspector: WindowsSecurityInspector | None = None,
         is_windows: bool | None = None,
     ) -> None:
         self._is_windows = os.name == "nt" if is_windows is None else is_windows
         self._credential_store = credential_store or WindowsCredentialManager(
+            is_windows=self._is_windows
+        )
+        self._security_inspector = security_inspector or WindowsAclInspector(
             is_windows=self._is_windows
         )
 
@@ -39,13 +48,24 @@ class CapabilityService:
                 "files.portrait_reference_dir", config.files.portrait_reference_dir, required=True
             ),
             self._file("media.ffmpeg_path", config.media.ffmpeg_path),
+            self._file("media.ffprobe_path", config.media.ffprobe_path),
             self._file("media.asr_asset", config.media.asr_asset),
+            self._file("media.calibration_corpus", config.media.calibration_corpus),
             self._file("media.crop_profile", config.media.crop_profile),
+            self._file("schedule.worker_executable", config.schedule.worker_executable),
             self._directory("dzen.browser_profile", config.dzen.browser_profile, required=True),
             self._log_directory(config.observability.log_path),
             self._scheduler(),
+            *self._security_inspector.inspect(
+                data_root=config.runtime.data_root,
+                browser_profile=config.dzen.browser_profile,
+                run_as_user=config.schedule.run_as_user,
+            ),
             self._credential("youtube.credential_ref", config.youtube.credential_ref),
             self._credential("telegram.bot_credential_ref", config.telegram.bot_credential_ref),
+            self._credential(
+                "schedule.task_credential_ref", config.schedule.task_credential_ref
+            ),
             self._backup_directory(config.backup.backup_root),
             CapabilityCheck(
                 name="delivery.identity",
@@ -129,10 +149,14 @@ class CapabilityService:
         if self._is_windows:
             return CapabilityCheck(
                 name="windows.task_scheduler",
-                state="available",
+                state="warning",
                 message=(
-                    "Windows host обнаружен; XML task specification можно сформировать. "
-                    "Wake-from-sleep ещё не проверен live smoke."
+                    "Windows host обнаружен, но registration и wake-from-sleep "
+                    "ещё не подтверждены отдельным live smoke."
+                ),
+                remediation=(
+                    "Зарегистрируйте non-production task и подтвердите его wake smoke "
+                    "перед production scheduling."
                 ),
             )
         return CapabilityCheck(
@@ -199,10 +223,27 @@ def validate_capabilities(
     *,
     config_path: Path,
     credential_store: CredentialStore | None = None,
+    security_inspector: WindowsSecurityInspector | None = None,
     is_windows: bool | None = None,
 ) -> CapabilityReport:
     """Convenience entry point for CLI and focused tests."""
     return CapabilityService(
         credential_store=credential_store,
+        security_inspector=security_inspector,
         is_windows=is_windows,
     ).validate(config, config_path=config_path)
+
+
+def require_worker_capabilities(report: CapabilityReport) -> None:
+    """Reject startup when a configured local prerequisite is unavailable.
+
+    A warning (notably the still-unproven scheduler wake) remains visible and
+    cannot be mistaken for production approval: live provider composition has
+    a separate explicit factory gate.
+    """
+
+    unavailable = [check.name for check in report.capabilities if check.state == "unavailable"]
+    if unavailable:
+        raise RuntimeCapabilityUnavailable(
+            "Live worker заблокирован: недоступны capability " + ", ".join(unavailable) + "."
+        )

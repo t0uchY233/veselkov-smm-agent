@@ -13,14 +13,18 @@ portrait_reference_dir = 'C:\VeselkovSmm\CONFIGURE\portrait-references'
 
 [media]
 ffmpeg_path = 'C:\VeselkovSmm\CONFIGURE\ffmpeg\bin\ffmpeg.exe'
+ffprobe_path = 'C:\VeselkovSmm\CONFIGURE\ffmpeg\bin\ffprobe.exe'
 asr_asset = 'C:\VeselkovSmm\CONFIGURE\asr\model.bin'
+calibration_corpus = 'C:\VeselkovSmm\CONFIGURE\calibration\veselkov.json'
 crop_profile = 'C:\VeselkovSmm\CONFIGURE\profiles\author-left.json'
 
 [schedule]
 task_folder = '\VeselkovSmm'
 worker_task_name = "worker"
+worker_executable = 'C:\VeselkovSmm\current\smm-worker.exe'
 # An explicit setup account is required for logged-off task execution.
 run_as_user = "CONFIGURE_WINDOWS_ACCOUNT"
+task_credential_ref = "windows-credential:VeselkovSmmAgent/TaskAccount"
 preflight_offset_minutes = 30
 
 [youtube]

@@ -99,14 +99,18 @@ class FilesConfig(StrictConfigModel):
 
 class MediaConfig(StrictConfigModel):
     ffmpeg_path: ExplicitPath
+    ffprobe_path: ExplicitPath
     asr_asset: ExplicitPath
+    calibration_corpus: ExplicitPath
     crop_profile: ExplicitPath
 
 
 class ScheduleConfig(StrictConfigModel):
     task_folder: str
     worker_task_name: str
+    worker_executable: ExplicitPath
     run_as_user: str = Field(min_length=1, max_length=256)
+    task_credential_ref: CredentialReference
     preflight_offset_minutes: int = Field(ge=1, le=24 * 60)
 
     @field_validator("task_folder")

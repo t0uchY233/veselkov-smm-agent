@@ -17,13 +17,17 @@ def config_payload(root: Path) -> dict[str, object]:
         },
         "media": {
             "ffmpeg_path": str(root / "ffmpeg.exe"),
+            "ffprobe_path": str(root / "ffprobe.exe"),
             "asr_asset": str(root / "model.bin"),
+            "calibration_corpus": str(root / "calibration.json"),
             "crop_profile": str(root / "author-left.json"),
         },
         "schedule": {
             "task_folder": "\\VeselkovSmm",
             "worker_task_name": "worker",
+            "worker_executable": str(root / "smm-worker.exe"),
             "run_as_user": "SERGEY-LAPTOP\\setup",
+            "task_credential_ref": "windows-credential:VeselkovSmmAgent/TaskAccount",
             "preflight_offset_minutes": 30,
         },
         "youtube": {

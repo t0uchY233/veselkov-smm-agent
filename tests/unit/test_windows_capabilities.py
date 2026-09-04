@@ -1,16 +1,29 @@
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from smm_agent.adapters.publishing.dzen_page import DzenPage
 from smm_agent.adapters.secrets.credential_manager import CredentialAvailability
+from smm_agent.adapters.secrets.secret_reader import SecretValue
 from smm_agent.adapters.windows.task_scheduler import (
+    CommandResult,
     TaskScheduleSpec,
+    WindowsTaskScheduler,
+    build_release_task_plans,
     render_task_xml,
     task_name_for_release,
 )
 from smm_agent.application.capability_service import validate_capabilities
+from smm_agent.application.capability_smoke_service import (
+    SmokeProbeResult,
+    run_capability_smoke,
+)
+from smm_agent.application.provider_factory import RuntimeCompositionError, WindowsProviderFactory
+from smm_agent.contracts.setup import CapabilityCheck
 from smm_agent.platform.config import SmmAgentConfig
+from smm_agent.platform.db import Database
 
 
 class AvailableCredentialStore:
@@ -18,6 +31,118 @@ class AvailableCredentialStore:
         assert reference.startswith("windows-credential:")
         return CredentialAvailability(state="available", message="Credential found.")
 
+
+class AvailableSecurityInspector:
+    def inspect(
+        self, *, data_root: str, browser_profile: str, run_as_user: str
+    ) -> tuple[CapabilityCheck, ...]:
+        del data_root, browser_profile, run_as_user
+        return (
+            CapabilityCheck(
+                name="windows.current_account", state="available", message="Account matches."
+            ),
+            CapabilityCheck(
+                name="windows.data_root_acl", state="available", message="ACL ok."
+            ),
+            CapabilityCheck(
+                name="windows.dzen_profile_acl", state="available", message="ACL ok."
+            ),
+        )
+
+
+class PassingSmokeProbes:
+    def _result(self) -> SmokeProbeResult:
+        return SmokeProbeResult(
+            passed=True,
+            message="Synthetic test resource confirmed.",
+            evidence={
+                "target_at_utc": "2026-09-04T11:00:00Z",
+                "token": "must-not-leak",
+            },
+        )
+
+    def youtube_private_publish_at_readback(self, config: SmmAgentConfig) -> SmokeProbeResult:
+        del config
+        return self._result()
+
+    def dzen_draft_schedule_url(self, config: SmmAgentConfig) -> SmokeProbeResult:
+        del config
+        return self._result()
+
+    def telegram_test_send(self, config: SmmAgentConfig) -> SmokeProbeResult:
+        del config
+        return self._result()
+
+    def windows_task_scheduler_registration_wake(self, config: SmmAgentConfig) -> SmokeProbeResult:
+        del config
+        return self._result()
+
+
+class FakeSecretReader:
+    def read(self, reference: str) -> SecretValue:
+        assert reference.startswith("windows-credential:")
+        return SecretValue("test-only-secret")
+
+
+class FakeDzenSession:
+    def goto(self, url: str) -> None:
+        del url
+
+    def is_visible(self, selector: str) -> bool:
+        del selector
+        return True
+
+    def text_content(self, selector: str) -> str | None:
+        del selector
+        return None
+
+    def get_attribute(self, selector: str, name: str) -> str | None:
+        del selector, name
+        return None
+
+    def fill(self, selector: str, value: str) -> None:
+        del selector, value
+
+    def click(self, selector: str) -> None:
+        del selector
+
+    def set_input_files(self, selector: str, paths: list[Path]) -> None:
+        del selector, paths
+
+    def screenshot(self, path: Path) -> None:
+        del path
+
+
+class FakeHttpTransport:
+    def send(self, request: object) -> object:
+        raise AssertionError(f"provider I/O was not expected: {request!r}")
+
+
+class FakeAlertTransport:
+    def lookup(self, *, notification_id: str, recipient: str) -> None:
+        del notification_id, recipient
+        return None
+
+    def send(self, *, request: object, body: str) -> object:
+        raise AssertionError(f"alert I/O was not expected: {request!r} {body!r}")
+
+
+class FakeProviderBindings:
+    def youtube_transport(
+        self, *, config: SmmAgentConfig, secrets: FakeSecretReader
+    ) -> FakeHttpTransport:
+        del config, secrets
+        return FakeHttpTransport()
+
+    def dzen_page(self, *, config: SmmAgentConfig) -> DzenPage:
+        del config
+        return DzenPage(FakeDzenSession())
+
+    def alert_transport(
+        self, *, config: SmmAgentConfig, secrets: FakeSecretReader
+    ) -> FakeAlertTransport:
+        del config, secrets
+        return FakeAlertTransport()
 
 def _configured_resources(root: Path) -> SmmAgentConfig:
     for directory in (
@@ -29,7 +154,14 @@ def _configured_resources(root: Path) -> SmmAgentConfig:
         root / "backups",
     ):
         directory.mkdir()
-    for file in (root / "ffmpeg.exe", root / "model.bin", root / "author-left.json"):
+    for file in (
+        root / "ffmpeg.exe",
+        root / "ffprobe.exe",
+        root / "model.bin",
+        root / "calibration.json",
+        root / "author-left.json",
+        root / "smm-worker.exe",
+    ):
         file.touch()
     return SmmAgentConfig.model_validate(
         {
@@ -41,13 +173,17 @@ def _configured_resources(root: Path) -> SmmAgentConfig:
             },
             "media": {
                 "ffmpeg_path": str(root / "ffmpeg.exe"),
+                "ffprobe_path": str(root / "ffprobe.exe"),
                 "asr_asset": str(root / "model.bin"),
+                "calibration_corpus": str(root / "calibration.json"),
                 "crop_profile": str(root / "author-left.json"),
             },
             "schedule": {
                 "task_folder": "\\VeselkovSmm",
                 "worker_task_name": "worker",
+                "worker_executable": str(root / "smm-worker.exe"),
                 "run_as_user": "SERGEY-LAPTOP\\setup",
+                "task_credential_ref": "windows-credential:VeselkovSmmAgent/TaskAccount",
                 "preflight_offset_minutes": 30,
             },
             "youtube": {
@@ -82,6 +218,7 @@ def test_capability_report_is_typed_and_does_not_claim_live_production(tmp_path:
         _configured_resources(tmp_path),
         config_path=tmp_path / "smm-agent.toml",
         credential_store=AvailableCredentialStore(),
+        security_inspector=AvailableSecurityInspector(),
         is_windows=True,
     )
 
@@ -94,6 +231,8 @@ def test_capability_report_is_typed_and_does_not_claim_live_production(tmp_path:
         "windows.task_scheduler",
         "youtube.credential_ref",
         "telegram.bot_credential_ref",
+        "schedule.task_credential_ref",
+        "windows.current_account",
     }
 
 
@@ -134,6 +273,13 @@ def test_task_scheduler_xml_is_utc_wakeable_logged_off_and_non_live() -> None:
     assert "2026-09-04T11:00:00Z" in plan.xml
     assert '"abc def"' in plan.xml
     assert "schtasks.exe" not in plan.xml
+    assert plan.command_argv == (
+        r"C:\VeselkovSmm\bin\smmctl.exe",
+        "release",
+        "publish",
+        "--release-id",
+        "abc def",
+    )
 
 
 def test_task_names_and_task_specs_reject_unsafe_input() -> None:
@@ -151,3 +297,104 @@ def test_task_names_and_task_specs_reject_unsafe_input() -> None:
             description="worker",
             purpose="worker",
         )
+
+
+def test_release_task_plans_bind_t_minus_30_and_target_to_one_release() -> None:
+    plans = build_release_task_plans(
+        release_id="018f14b7-4d8e-7e00-a1bb-123456789abc",
+        target_at=datetime(2026, 9, 4, 11, 0, tzinfo=UTC),
+        preflight_offset_minutes=30,
+        task_folder=r"\VeselkovSmm",
+        worker_executable=r"C:\VeselkovSmm\current\smm-worker.exe",
+        config_path=r"C:\VeselkovSmm\config\smm-agent.toml",
+        run_as_user=r"SERGEY-LAPTOP\setup",
+        working_directory=r"C:\VeselkovSmm",
+    )
+
+    assert plans.preflight.task_name.endswith("-preflight")
+    assert plans.target.task_name.endswith("-telegram")
+    assert "2026-09-04T10:30:00Z" in plans.preflight.xml
+    assert "2026-09-04T11:00:00Z" in plans.target.xml
+    assert plans.preflight.command_argv[1:] == (
+        "--config",
+        r"C:\VeselkovSmm\config\smm-agent.toml",
+        "--once",
+        "--scheduled-task",
+        plans.preflight.task_name,
+    )
+
+
+class RecordingRunner:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ...]] = []
+
+    def run(self, arguments: Sequence[str]) -> CommandResult:
+        self.calls.append(tuple(arguments))
+        return CommandResult(returncode=0)
+
+
+def test_scheduler_registration_and_deletion_use_exact_list_argv_without_execution() -> None:
+    runner = RecordingRunner()
+    scheduler = WindowsTaskScheduler(runner=runner, is_windows=True)
+    plan = render_task_xml(
+        TaskScheduleSpec(
+            task_name=r"\VeselkovSmm\worker",
+            target_at=datetime(2026, 9, 4, 11, 0, tzinfo=UTC),
+            executable=r"C:\VeselkovSmm\bin\smm-worker.exe",
+            arguments=("--config", r"C:\VeselkovSmm\config\smm-agent.toml", "--once"),
+            working_directory=r"C:\VeselkovSmm",
+            run_as_user=r"SERGEY-LAPTOP\setup",
+            description="worker",
+            purpose="worker",
+        )
+    )
+
+    registered = scheduler.register(plan, task_password="not-persisted")
+    deleted = scheduler.delete(plan.task_name)
+
+    assert registered.action == "registered"
+    assert deleted.action == "deleted"
+    assert runner.calls[0][:5] == ("schtasks.exe", "/Create", "/TN", plan.task_name, "/XML")
+    assert runner.calls[0][-5:] == ("/RU", plan.run_as_user, "/RP", "not-persisted", "/F")
+    assert runner.calls[1] == ("schtasks.exe", "/Delete", "/TN", plan.task_name, "/F")
+
+
+def test_capability_smoke_redacts_evidence_and_stays_production_blocked(tmp_path: Path) -> None:
+    report = run_capability_smoke(
+        _configured_resources(tmp_path),
+        config_path=str(tmp_path / "smm-agent.toml"),
+        execute=True,
+        probes=PassingSmokeProbes(),
+    )
+
+    assert report.all_required_smokes_passed is True
+    assert report.production_readiness == "blocked"
+    assert {check.state for check in report.capabilities} == {"passed"}
+    assert all(
+        item.key != "token" for check in report.capabilities for item in check.evidence
+    )
+
+
+def test_provider_factory_requires_explicit_production_gate_and_uses_injected_seams(
+    tmp_path: Path,
+) -> None:
+    config = _configured_resources(tmp_path)
+    database = Database(tmp_path / "runtime")
+    database.initialize()
+    bindings = FakeProviderBindings()
+
+    with pytest.raises(RuntimeCompositionError, match="заблокирована"):
+        WindowsProviderFactory(bindings=bindings).create(
+            config=config,
+            database=database,
+            secrets=FakeSecretReader(),
+        )
+
+    runtime = WindowsProviderFactory(bindings=bindings, production_ready=True).create(
+        config=config,
+        database=database,
+        secrets=FakeSecretReader(),
+    )
+
+    assert set(runtime.publishers) == {"youtube", "dzen", "telegram"}
+    assert runtime.capability_label == "windows-live-provider-bindings"

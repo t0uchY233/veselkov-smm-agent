@@ -15,6 +15,7 @@ from smm_agent.adapters.editorial.docx_builder import PythonDocxBuilder
 from smm_agent.adapters.editorial.image_inspector import PillowImageInspector
 from smm_agent.adapters.media.ffmpeg import FFmpegMediaTool
 from smm_agent.application.capability_service import validate_capabilities
+from smm_agent.application.capability_smoke_service import run_capability_smoke
 from smm_agent.application.editorial_service import (
     decide_gate,
     import_editorial,
@@ -34,7 +35,7 @@ from smm_agent.application.setup_service import accept_media_profile
 from smm_agent.application.video_service import select_recording_candidate
 from smm_agent.contracts.cli import ErrorDetail, ErrorResponse
 from smm_agent.contracts.editorial import EditorialBundle, PlanDocument
-from smm_agent.contracts.setup import DzenLoginHandoff
+from smm_agent.contracts.setup import DzenLoginHandoff, SmokeName
 from smm_agent.contracts.video import AlignmentProfile
 from smm_agent.domain.release import ReleaseConflict
 from smm_agent.platform.config import ConfigLoadError, default_data_root, load_config
@@ -44,9 +45,13 @@ app = typer.Typer(add_completion=False, no_args_is_help=True)
 release_app = typer.Typer(add_completion=False, no_args_is_help=True)
 setup_app = typer.Typer(add_completion=False, no_args_is_help=True)
 setup_login_app = typer.Typer(add_completion=False, no_args_is_help=True)
+capability_app = typer.Typer(add_completion=False, no_args_is_help=True)
+capability_smoke_app = typer.Typer(add_completion=False, invoke_without_command=True)
 app.add_typer(release_app, name="release")
 app.add_typer(setup_app, name="setup")
+app.add_typer(capability_app, name="capability")
 setup_app.add_typer(setup_login_app, name="login")
+capability_app.add_typer(capability_smoke_app, name="smoke")
 
 
 class GateChoice(StrEnum):
@@ -206,6 +211,102 @@ def setup_login_dzen(
                 "После ручного входа выполните live Dzen smoke из следующего Slice 6 шага."
             ),
         )
+    )
+
+
+def _capability_smoke(
+    *,
+    config: Path,
+    execute: bool,
+    names: tuple[SmokeName, ...],
+) -> None:
+    try:
+        configured = load_config(config)
+    except ConfigLoadError as error:
+        _fail(
+            "VALIDATION_FAILED",
+            str(error),
+            "Исправьте config/smm-agent.toml; secret values в config не допускаются.",
+        )
+    _emit(
+        run_capability_smoke(
+            configured,
+            config_path=str(config),
+            execute=execute,
+            names=names,
+        )
+    )
+
+
+@capability_smoke_app.callback(invoke_without_command=True)
+def capability_smoke_all(
+    context: typer.Context,
+    config: Annotated[Path, typer.Option("--config", dir_okay=False)],
+    execute: Annotated[bool, typer.Option("--execute")] = False,
+) -> None:
+    """Report or explicitly run isolated non-production capability probes."""
+    if context.invoked_subcommand is None:
+        _capability_smoke(
+            config=config,
+            execute=execute,
+            names=(
+                "youtube.private_publish_at_readback",
+                "dzen.draft_schedule_url",
+                "telegram.test_send",
+                "windows.task_scheduler_registration_wake",
+            ),
+        )
+
+
+@capability_smoke_app.command("youtube")
+def capability_smoke_youtube(
+    config: Annotated[Path, typer.Option("--config", dir_okay=False)],
+    execute: Annotated[bool, typer.Option("--execute")] = False,
+) -> None:
+    """Check a non-production YouTube private publishAt/readback path."""
+    _capability_smoke(
+        config=config,
+        execute=execute,
+        names=("youtube.private_publish_at_readback",),
+    )
+
+
+@capability_smoke_app.command("dzen")
+def capability_smoke_dzen(
+    config: Annotated[Path, typer.Option("--config", dir_okay=False)],
+    execute: Annotated[bool, typer.Option("--execute")] = False,
+) -> None:
+    """Check a non-production Dzen draft schedule URL/readback path."""
+    _capability_smoke(
+        config=config,
+        execute=execute,
+        names=("dzen.draft_schedule_url",),
+    )
+
+
+@capability_smoke_app.command("telegram")
+def capability_smoke_telegram(
+    config: Annotated[Path, typer.Option("--config", dir_okay=False)],
+    execute: Annotated[bool, typer.Option("--execute")] = False,
+) -> None:
+    """Check a non-production Telegram test send path."""
+    _capability_smoke(
+        config=config,
+        execute=execute,
+        names=("telegram.test_send",),
+    )
+
+
+@capability_smoke_app.command("scheduler")
+def capability_smoke_scheduler(
+    config: Annotated[Path, typer.Option("--config", dir_okay=False)],
+    execute: Annotated[bool, typer.Option("--execute")] = False,
+) -> None:
+    """Check a non-production Task Scheduler registration and wake path."""
+    _capability_smoke(
+        config=config,
+        execute=execute,
+        names=("windows.task_scheduler_registration_wake",),
     )
 
 
