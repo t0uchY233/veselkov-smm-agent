@@ -19,6 +19,7 @@ from smm_agent.contracts.publication import (
     PublicationResult,
     PublicationSnapshot,
     PublicationState,
+    RecoveryJobPayload,
     TelegramJobPayload,
 )
 from smm_agent.domain.publication.ports import Publisher
@@ -32,7 +33,7 @@ from smm_agent.domain.publication.service import (
 )
 from smm_agent.platform.db import Database
 from smm_agent.platform.ids import uuid7
-from smm_agent.platform.jobs import JobStore
+from smm_agent.platform.jobs import JobClaim, JobStore
 from smm_agent.platform.publications import PublicationStore
 
 
@@ -311,6 +312,8 @@ def _persist_receipt(
     owner_id: str,
     snapshot: PublicationSnapshot,
     target_at_utc: datetime,
+    idempotency_key: str | None = None,
+    operation_key: str | None = None,
 ) -> None:
     at = datetime.now(UTC)
     with database.transaction() as connection:
@@ -335,6 +338,8 @@ def _persist_receipt(
             snapshot=snapshot,
             target_at_utc=target_at_utc.isoformat().replace("+00:00", "Z"),
             updated_at=at.isoformat().replace("+00:00", "Z"),
+            idempotency_key=idempotency_key,
+            operation_key=operation_key,
         )
 
 
@@ -655,13 +660,23 @@ def schedule_release(
             )
         ):
             raise StateConflict("Версия Выпуска изменилась во время подготовки площадок.")
-        for snapshot in snapshots.values():
+        for platform, snapshot in snapshots.items():
+            publication_idempotency_key = (
+                f"publication:{current.release_id}:{platform}:{target.isoformat()}"
+            )
+            operation_key = (
+                f"execute:{current.release_id}:telegram:{target.isoformat()}"
+                if platform == "telegram"
+                else f"arm:{current.release_id}:{platform}:{target.isoformat()}"
+            )
             PublicationStore.upsert(
                 connection,
                 release_id=current.release_id,
                 snapshot=snapshot,
                 target_at_utc=target_text,
                 updated_at=at,
+                idempotency_key=publication_idempotency_key,
+                operation_key=operation_key,
             )
             database.add_event(
                 connection,
@@ -761,12 +776,21 @@ def execute_telegram_task(
     command_id: str,
     expected_revision: int,
     publishers: dict[Platform, Publisher],
-    job_payload: dict[str, object],
-    job_id: str,
-    job_owner_id: str,
+    claim: JobClaim,
     now: datetime,
 ) -> PublicationResult:
-    payload = TelegramJobPayload.model_validate(job_payload)
+    """Run the target-time Telegram job and durably hand partial work to recovery.
+
+    The target-time job has exactly one authority: its fenced ``JobClaim``.  If
+    any platform cannot be confirmed public, it records every known receipt,
+    enqueues the single recovery job using the original Telegram task identity,
+    and only then completes itself.  A crash before that transaction is safe:
+    the next claim checks remote status before any repeated Telegram execute.
+    """
+
+    if claim.kind != "telegram_publish_reconcile":
+        raise ValueError("Telegram target handler получил job другого вида.")
+    payload = TelegramJobPayload.model_validate_json(claim.payload_json)
     request_hash = _hash(
         {
             "command": "publication.telegram.execute",
@@ -785,18 +809,14 @@ def execute_telegram_task(
             or release.revision != expected_revision
             or release.state != "scheduled"
             or release.target_at_utc is None
+            or release.release_id != claim.release_id
         ):
             raise StateConflict("Telegram task относится к другому состоянию Выпуска.")
         publication_rows = PublicationStore.rows(connection, release.release_id)
-        row = next(
-            (
-                item
-                for item in publication_rows
-                if item["platform"] == "telegram"
-            ),
-            None,
-        )
-    if row is None or str(row["remote_id"]) != payload.task_id:
+        stored = {cast(Platform, str(item["platform"])): item for item in publication_rows}
+    if set(stored) != {"youtube", "dzen", "telegram"}:
+        raise StateConflict("Telegram task требует receipts всех площадок.")
+    if str(stored["telegram"]["remote_id"]) != payload.task_id:
         raise StateConflict("Telegram task не совпадает с сохранённым receipt.")
     target = datetime.fromisoformat(release.target_at_utc.replace("Z", "+00:00"))
     if payload.target_at_utc.astimezone(UTC) != target or now.astimezone(UTC) < target:
@@ -810,47 +830,84 @@ def execute_telegram_task(
         or _file_sha256(caption_path) != payload.caption_sha256
     ):
         raise StateConflict("Telegram task artifacts изменились или отсутствуют.")
-    current_telegram = publishers["telegram"].status(payload.task_id, now=now)
-    if current_telegram.state == "public":
-        public = current_telegram
-    else:
+
+    def stored_snapshot(platform: Platform) -> PublicationSnapshot:
+        row = stored[platform]
+        public_at = row["public_at"]
+        return PublicationSnapshot(
+            platform=platform,
+            state=cast(PublicationState, str(row["state"])),
+            remote_id=str(row["remote_id"]),
+            known_url=str(row["known_url"]) if row["known_url"] is not None else None,
+            payload_sha256=str(row["payload_sha256"]),
+            target_at_utc=datetime.fromisoformat(str(row["target_at_utc"]).replace("Z", "+00:00")),
+            public_at=(
+                datetime.fromisoformat(str(public_at).replace("Z", "+00:00"))
+                if public_at is not None
+                else None
+            ),
+        )
+
+    # Every target-time attempt performs a complete status pass before a
+    # Telegram side effect.  A provider exception becomes a recovery handoff,
+    # but KeyboardInterrupt/SystemExit remain crash points by design.
+    snapshots: dict[Platform, PublicationSnapshot] = {}
+    status_failed = False
+    for platform in ("youtube", "dzen", "telegram"):
+        row = stored[platform]
+        try:
+            snapshot = publishers[platform].status(str(row["remote_id"]), now=now)
+        except Exception:
+            snapshots[platform] = stored_snapshot(platform)
+            status_failed = True
+            continue
+        if snapshot.remote_id != str(row["remote_id"]):
+            raise StateConflict(f"{platform}: remote receipt не совпадает")
+        if snapshot.payload_sha256 != str(row["payload_sha256"]):
+            raise StateConflict(f"{platform}: payload receipt не совпадает")
+        if snapshot.target_at_utc is None or snapshot.target_at_utc.astimezone(UTC) != target:
+            raise StateConflict(f"{platform}: target receipt не совпадает")
+        snapshots[platform] = snapshot
+
+    telegram = snapshots["telegram"]
+    if not status_failed and telegram.state != "public":
         validate_armed_snapshot(
-            current_telegram,
+            telegram,
             platform="telegram",
             payload_sha256=payload.payload_sha256,
             target_at_utc=target,
         )
-        public = publishers["telegram"].execute(
-            payload.task_id,
-            operation_key=f"execute:{release.release_id}:telegram:{target.isoformat()}",
-            now=now,
-        )
-    validate_public_snapshot(
-        public,
-        platform="telegram",
-        payload_sha256=payload.payload_sha256,
-        target_at_utc=target,
-    )
-    snapshots: dict[Platform, PublicationSnapshot] = {"telegram": public}
-    for platform in ("youtube", "dzen"):
-        native_row = next(
-            item for item in publication_rows if item["platform"] == platform
-        )
-        native = publishers[platform].status(
-            str(native_row["remote_id"]),
-            now=now,
-        )
-        if native.state == "public":
-            validate_public_snapshot(
-                native,
-                platform=platform,
-                payload_sha256=str(native_row["payload_sha256"]),
-                target_at_utc=target,
+        try:
+            telegram = publishers["telegram"].execute(
+                telegram.remote_id,
+                operation_key=(
+                    str(stored["telegram"]["operation_key"])
+                    if stored["telegram"]["operation_key"] is not None
+                    else f"execute:{release.release_id}:telegram:{target.isoformat()}"
+                ),
+                now=now,
             )
-        snapshots[platform] = native
+        except Exception:
+            # The provider may have accepted the side effect before timing
+            # out.  Do not guess: recovery will look up the original task.
+            status_failed = True
+        else:
+            if telegram.remote_id != payload.task_id:
+                raise StateConflict("Telegram execute вернул другой remote receipt.")
+            snapshots["telegram"] = telegram
+
+    if not status_failed:
+        for platform, snapshot in snapshots.items():
+            if snapshot.state == "public":
+                validate_public_snapshot(
+                    snapshot,
+                    platform=platform,
+                    payload_sha256=str(stored[platform]["payload_sha256"]),
+                    target_at_utc=target,
+                )
     destination = (
         "published"
-        if all(snapshot.state == "public" for snapshot in snapshots.values())
+        if not status_failed and all(snapshot.state == "public" for snapshot in snapshots.values())
         else "recovering"
     )
     at = now.astimezone(UTC).isoformat().replace("+00:00", "Z")
@@ -863,16 +920,17 @@ def execute_telegram_task(
             current is None
             or current.revision != expected_revision
             or current.state != "scheduled"
+            or current.release_id != claim.release_id
         ):
             raise StateConflict("Версия Выпуска изменилась во время Telegram send.")
-        stored = {
+        current_stored = {
             cast(Platform, str(item["platform"])): item
             for item in PublicationStore.rows(connection, current.release_id)
         }
         for platform, snapshot in snapshots.items():
-            if str(stored[platform]["remote_id"]) != snapshot.remote_id:
+            if str(current_stored[platform]["remote_id"]) != snapshot.remote_id:
                 raise StateConflict(f"{platform}: remote receipt не совпадает")
-            expected_hash = str(stored[platform]["payload_sha256"])
+            expected_hash = str(current_stored[platform]["payload_sha256"])
             if snapshot.state == "public":
                 validate_public_snapshot(
                     snapshot,
@@ -886,6 +944,50 @@ def execute_telegram_task(
                 snapshot=snapshot,
                 target_at_utc=release.target_at_utc,
                 updated_at=at,
+                idempotency_key=(
+                    str(current_stored[platform]["idempotency_key"])
+                    if current_stored[platform]["idempotency_key"] is not None
+                    else f"publication:{current.release_id}:{platform}:{target.isoformat()}"
+                ),
+                operation_key=(
+                    str(current_stored[platform]["operation_key"])
+                    if current_stored[platform]["operation_key"] is not None
+                    else f"execute:{current.release_id}:telegram:{target.isoformat()}"
+                    if platform == "telegram"
+                    else f"arm:{current.release_id}:{platform}:{target.isoformat()}"
+                ),
+            )
+        if destination == "recovering":
+            telegram_row = current_stored["telegram"]
+            publication_key = (
+                str(telegram_row["idempotency_key"])
+                if telegram_row["idempotency_key"] is not None
+                else f"publication:{current.release_id}:telegram:{target.isoformat()}"
+            )
+            operation_key = (
+                str(telegram_row["operation_key"])
+                if telegram_row["operation_key"] is not None
+                else f"execute:{current.release_id}:telegram:{target.isoformat()}"
+            )
+            JobStore.enqueue(
+                connection,
+                release_id=current.release_id,
+                kind="publication_recovery",
+                due_at=at,
+                retry_policy_id="provider-30s-2m-5m-15m",
+                idempotency_key=(
+                    f"recovery:{current.release_id}:telegram:{target.isoformat()}"
+                ),
+                payload=RecoveryJobPayload(
+                    release_id=current.release_id,
+                    platform="telegram",
+                    target_at_utc=target,
+                    payload_sha256=str(telegram_row["payload_sha256"]),
+                    publication_idempotency_key=publication_key,
+                    operation_key=operation_key,
+                    remote_id=str(telegram_row["remote_id"]),
+                ).model_dump(mode="json"),
+                now=at,
             )
         revision = (
             database.complete_release(
@@ -940,9 +1042,7 @@ def execute_telegram_task(
                         else at,
                     },
                 )
-        if not JobStore.mark_succeeded(
-            connection, job_id=job_id, owner_id=job_owner_id, now=at
-        ):
+        if not JobStore.mark_succeeded(connection, claim=claim, now=at):
             raise StateConflict("Потеряна lease Telegram job.")
         result = _result(
             release_id=current.release_id,

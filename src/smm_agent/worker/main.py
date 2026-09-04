@@ -9,6 +9,7 @@ from pathlib import Path
 
 from smm_agent.adapters.media.ffmpeg import FFmpegMediaTool
 from smm_agent.adapters.media.offline_asr import OfflineJsonRecognizer
+from smm_agent.adapters.notification.replay import ReplayAlertTransport
 from smm_agent.adapters.publishing.replay import ReplayPublisher
 from smm_agent.application.setup_service import require_accepted_media_profile
 from smm_agent.contracts.video import AlignmentProfile
@@ -139,6 +140,9 @@ def main() -> None:
                     state_path=database.data_root / "state/replay-telegram.json",
                 ),
             },
+            alert_transport=ReplayAlertTransport(
+                state_path=database.data_root / "state/replay-alerts.json"
+            ),
         )
         if args.publication_replay
         else None
