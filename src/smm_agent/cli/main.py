@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, NoReturn
@@ -13,6 +14,7 @@ from typer._click.exceptions import ClickException
 from smm_agent.adapters.editorial.docx_builder import PythonDocxBuilder
 from smm_agent.adapters.editorial.image_inspector import PillowImageInspector
 from smm_agent.adapters.media.ffmpeg import FFmpegMediaTool
+from smm_agent.application.capability_service import validate_capabilities
 from smm_agent.application.editorial_service import (
     decide_gate,
     import_editorial,
@@ -32,16 +34,19 @@ from smm_agent.application.setup_service import accept_media_profile
 from smm_agent.application.video_service import select_recording_candidate
 from smm_agent.contracts.cli import ErrorDetail, ErrorResponse
 from smm_agent.contracts.editorial import EditorialBundle, PlanDocument
+from smm_agent.contracts.setup import DzenLoginHandoff
 from smm_agent.contracts.video import AlignmentProfile
 from smm_agent.domain.release import ReleaseConflict
-from smm_agent.platform.config import default_data_root
+from smm_agent.platform.config import ConfigLoadError, default_data_root, load_config
 from smm_agent.platform.db import Database
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 release_app = typer.Typer(add_completion=False, no_args_is_help=True)
 setup_app = typer.Typer(add_completion=False, no_args_is_help=True)
+setup_login_app = typer.Typer(add_completion=False, no_args_is_help=True)
 app.add_typer(release_app, name="release")
 app.add_typer(setup_app, name="setup")
+setup_app.add_typer(setup_login_app, name="login")
 
 
 class GateChoice(StrEnum):
@@ -143,6 +148,65 @@ def setup_accept_media_profile(
         _validation_failure(error)
     else:
         _emit(result)
+
+
+@setup_app.command("validate")
+def setup_validate(
+    config: Annotated[Path, typer.Option("--config", dir_okay=False)],
+) -> None:
+    """Validate explicit local setup without publishing or registering a task."""
+    try:
+        configured = load_config(config)
+    except ConfigLoadError as error:
+        _fail(
+            "VALIDATION_FAILED",
+            str(error),
+            "Исправьте config/smm-agent.toml; secret values в config не допускаются.",
+        )
+    else:
+        _emit(validate_capabilities(configured, config_path=config))
+
+
+@setup_login_app.command("dzen")
+def setup_login_dzen(
+    config: Annotated[Path, typer.Option("--config", dir_okay=False)],
+) -> None:
+    """Hand off a one-time Dzen session to a visible Windows browser and its user."""
+    try:
+        configured = load_config(config)
+    except ConfigLoadError as error:
+        _fail(
+            "VALIDATION_FAILED",
+            str(error),
+            "Исправьте config/smm-agent.toml before the headful Dzen login.",
+        )
+
+    if os.name != "nt":
+        _emit(
+            DzenLoginHandoff(
+                state="unavailable",
+                browserProfile=configured.dzen.browser_profile,
+                message="Dzen login требует headful browser на Windows; текущий host не Windows.",
+                nextAction=(
+                    "Запустите эту команду на ноутбуке Сергея Николаевича под setup account."
+                ),
+            )
+        )
+        raise typer.Exit(2)
+
+    _emit(
+        DzenLoginHandoff(
+            state="requires_headful_windows",
+            browserProfile=configured.dzen.browser_profile,
+            message=(
+                "Откройте видимый Dzen browser profile и выполните вход лично. "
+                "Команда не читает пароль, не обходит MFA и не запускает headless login."
+            ),
+            nextAction=(
+                "После ручного входа выполните live Dzen smoke из следующего Slice 6 шага."
+            ),
+        )
+    )
 
 
 @release_app.command("start")
