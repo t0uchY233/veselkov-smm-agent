@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 from urllib.parse import urlparse
 
+from smm_agent.adapters.publishing.dzen_receipts import canonical_dzen_channel_url
 from smm_agent.domain.publication.ports import DzenDomMismatchError, ProviderOperationError
 
 DZEN_STUDIO_URL = "https://dzen.ru/profile/editor"
@@ -49,6 +50,19 @@ class DzenSession(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class DzenAccountIdentity:
+    """The one author account that is allowed to create or change an article."""
+
+    channel_url: str
+    author_identity: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "channel_url", canonical_dzen_channel_url(self.channel_url))
+        if not self.author_identity.strip() or len(self.author_identity) > 256:
+            raise ValueError("Dzen author identity должен быть явно задан.")
+
+
+@dataclass(frozen=True, slots=True)
 class DzenSelectors:
     """Semantic selectors asserted by the staging smoke.
 
@@ -59,6 +73,7 @@ class DzenSelectors:
     """
 
     authenticated_marker: str = "[data-testid='dzen-editor-authenticated']"
+    session_identity: str = "[data-testid='dzen-session-identity']"
     captcha_marker: str = "[data-testid='dzen-captcha']"
     mfa_marker: str = "[data-testid='dzen-mfa']"
     new_article: str = "[data-testid='dzen-new-article']"
@@ -88,6 +103,8 @@ class DzenArticleReceipt:
     state: DzenPageState
     target_at_utc: datetime | None
     public_at_utc: datetime | None
+    channel_url: str
+    author_identity: str
     diagnostic_screenshot_path: str | None = None
 
 
@@ -115,6 +132,13 @@ def _manual_login_required() -> ProviderOperationError:
         sanitized_detail=(
             "Требуется ручной вход в Дзен в видимом браузере: CAPTCHA и MFA не обходятся."
         ),
+    )
+
+
+def _identity_mismatch() -> ProviderOperationError:
+    return ProviderOperationError(
+        code="RECEIPT_MISMATCH",
+        sanitized_detail="Открыта не та учётная запись или канал Дзена.",
     )
 
 
@@ -149,12 +173,25 @@ class DzenPage:
         self,
         session: DzenSession,
         *,
+        expected_channel_url: str | None = None,
+        expected_author_identity: str | None = None,
         selectors: DzenSelectors | None = None,
         diagnostics: DzenDiagnosticPaths | None = None,
     ) -> None:
+        if (expected_channel_url is None) != (expected_author_identity is None):
+            raise ValueError("Dzen page требует channel URL и author identity вместе.")
         self._session = session
+        self._expected_identity = (
+            DzenAccountIdentity(expected_channel_url, expected_author_identity)
+            if expected_channel_url is not None and expected_author_identity is not None
+            else None
+        )
         self._selectors = selectors or DzenSelectors()
         self._diagnostics = diagnostics
+
+    @property
+    def expected_identity(self) -> DzenAccountIdentity | None:
+        return self._expected_identity
 
     def _capture(
         self, stage: Literal["prepared", "scheduled", "status", "failure"]
@@ -163,7 +200,10 @@ class DzenPage:
             return None
         path = self._diagnostics.for_stage(stage)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._session.screenshot(path)
+        try:
+            self._session.screenshot(path)
+        except Exception:  # A diagnostic must never hide the actual terminal error.
+            return None
         return str(path)
 
     def _require_authenticated(self) -> None:
@@ -181,8 +221,40 @@ class DzenPage:
             self._capture("failure")
             raise DzenDomMismatchError()
 
+    def _require_expected_identity(self) -> DzenAccountIdentity:
+        expected = self._expected_identity
+        if expected is None:
+            raise ProviderOperationError(
+                code="INVALID_PAYLOAD",
+                sanitized_detail=(
+                    "Dzen adapter должен быть создан с ожидаемыми channel URL и author identity."
+                ),
+            )
+        self._require_authenticated()
+        self._require_visible(self._selectors.session_identity)
+        observed_channel = self._session.get_attribute(
+            self._selectors.session_identity, "data-channel-url"
+        )
+        observed_author = self._session.get_attribute(
+            self._selectors.session_identity, "data-author-identity"
+        )
+        try:
+            observed = DzenAccountIdentity(
+                observed_channel or "", observed_author or ""
+            )
+        except ValueError:
+            self._capture("failure")
+            raise DzenDomMismatchError() from None
+        if observed != expected:
+            self._capture("failure")
+            raise _identity_mismatch()
+        return expected
+
     def _receipt(
-        self, *, stage: Literal["prepared", "scheduled", "status", "failure"]
+        self,
+        *,
+        stage: Literal["prepared", "scheduled", "status", "failure"],
+        identity: DzenAccountIdentity,
     ) -> DzenArticleReceipt:
         self._require_visible(self._selectors.article_root)
         article_id, article_url = _article_identity(
@@ -225,6 +297,8 @@ class DzenPage:
             state=state,
             target_at_utc=target_at_utc,
             public_at_utc=public_at_utc,
+            channel_url=identity.channel_url,
+            author_identity=identity.author_identity,
             diagnostic_screenshot_path=self._capture(stage),
         )
 
@@ -257,7 +331,7 @@ class DzenPage:
         """Create and save one draft; never attempts an interactive login."""
 
         self._session.goto(DZEN_STUDIO_URL)
-        self._require_authenticated()
+        identity = self._require_expected_identity()
         for selector in (
             self._selectors.new_article,
             self._selectors.title_input,
@@ -273,7 +347,7 @@ class DzenPage:
         self._session.set_input_files(self._selectors.cover_input, [cover_path])
         self._session.set_input_files(self._selectors.visual_input, visual_paths)
         self._session.click(self._selectors.save_draft)
-        receipt = self._receipt(stage="prepared")
+        receipt = self._receipt(stage="prepared", identity=identity)
         self.assert_identity(
             receipt, expected_article_id=receipt.article_id, expected_title=title
         )
@@ -287,8 +361,8 @@ class DzenPage:
 
         expected_article_id, expected_url = _article_identity(article_url)
         self._session.goto(expected_url)
-        self._require_authenticated()
-        receipt = self._receipt(stage="status")
+        identity = self._require_expected_identity()
+        receipt = self._receipt(stage="status", identity=identity)
         self.assert_identity(
             receipt, expected_article_id=expected_article_id, expected_title=receipt.title
         )
@@ -299,7 +373,7 @@ class DzenPage:
     ) -> DzenArticleReceipt:
         expected_article_id, expected_url = _article_identity(article_url)
         self._session.goto(expected_url)
-        self._require_authenticated()
+        identity = self._require_expected_identity()
         self._require_visible(self._selectors.schedule_input)
         self._require_visible(self._selectors.schedule_button)
         self._session.fill(
@@ -307,7 +381,7 @@ class DzenPage:
             target_at_utc.astimezone(UTC).isoformat().replace("+00:00", "Z"),
         )
         self._session.click(self._selectors.schedule_button)
-        receipt = self._receipt(stage="scheduled")
+        receipt = self._receipt(stage="scheduled", identity=identity)
         self.assert_identity(
             receipt, expected_article_id=expected_article_id, expected_title=receipt.title
         )
@@ -317,8 +391,8 @@ class DzenPage:
     def cancel_scheduled_article(self, article_url: str) -> DzenArticleReceipt:
         expected_article_id, expected_url = _article_identity(article_url)
         self._session.goto(expected_url)
-        self._require_authenticated()
-        before = self._receipt(stage="status")
+        identity = self._require_expected_identity()
+        before = self._receipt(stage="status", identity=identity)
         self.assert_identity(
             before, expected_article_id=expected_article_id, expected_title=before.title
         )
@@ -329,7 +403,7 @@ class DzenPage:
             )
         self._require_visible(self._selectors.cancel_schedule)
         self._session.click(self._selectors.cancel_schedule)
-        receipt = self._receipt(stage="status")
+        receipt = self._receipt(stage="status", identity=identity)
         self.assert_identity(
             receipt, expected_article_id=expected_article_id, expected_title=before.title
         )
