@@ -7,10 +7,13 @@ request log. A Windows composition root supplies an authenticated transport.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+import json
+import os
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, cast
+from typing import Final, Literal, Protocol, cast
 
 from smm_agent.adapters.publishing.http import (
     HttpRequest,
@@ -35,6 +38,127 @@ YOUTUBE_UPLOAD_BASE: Final = "https://www.googleapis.com/upload/youtube/v3"
 _PAYLOAD_TAG_PREFIX: Final = "smm-agent-payload-"
 _REQUEST_TAG_PREFIX: Final = "smm-agent-request-"
 _TARGET_TAG_PREFIX: Final = "smm-agent-target-"
+
+YouTubeUploadState = Literal["initializing", "uploading", "uploaded", "cancelled"]
+
+
+@dataclass(frozen=True, slots=True)
+class YouTubeUploadReceipt:
+    """Non-secret durable resumable-upload state for one approved payload.
+
+    The resumable session URL is required to continue the very same YouTube
+    upload after a process restart.  It is deliberately validated to exclude
+    bearer-like query values and contains neither an OAuth token nor a raw
+    provider response.  A remote ID, once known, makes all future calls status
+    first rather than creating another video.
+    """
+
+    idempotency_key: str
+    payload_sha256: str
+    video_sha256: str
+    video_size: int
+    video_media_type: str
+    state: YouTubeUploadState
+    initialization_attempted: bool = False
+    session_url: str | None = None
+    remote_id: str | None = None
+    thumbnail_uploaded: bool = False
+    target_at_utc: str | None = None
+
+
+class YouTubeUploadReceiptStore(Protocol):
+    """Durable upload state.  Implementations persist no OAuth credential."""
+
+    def load(self, idempotency_key: str) -> YouTubeUploadReceipt | None: ...
+
+    def load_by_remote_id(self, remote_id: str) -> YouTubeUploadReceipt | None: ...
+
+    def save(self, receipt: YouTubeUploadReceipt) -> None: ...
+
+
+class InMemoryYouTubeUploadReceiptStore:
+    """Test store which mirrors the durable JSON store protocol."""
+
+    def __init__(self) -> None:
+        self._receipts: dict[str, YouTubeUploadReceipt] = {}
+
+    def load(self, idempotency_key: str) -> YouTubeUploadReceipt | None:
+        return self._receipts.get(idempotency_key)
+
+    def load_by_remote_id(self, remote_id: str) -> YouTubeUploadReceipt | None:
+        return next(
+            (receipt for receipt in self._receipts.values() if receipt.remote_id == remote_id), None
+        )
+
+    def save(self, receipt: YouTubeUploadReceipt) -> None:
+        _validate_receipt(receipt)
+        self._receipts[receipt.idempotency_key] = receipt
+
+
+class JsonYouTubeUploadReceiptStore:
+    """Atomic, SQLite-ready durable store for resumable session receipts.
+
+    The Windows composition root can replace this implementation with SQLite
+    without changing the publisher.  It never serializes token material,
+    Authorization headers, request bodies, or provider response bodies.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def load(self, idempotency_key: str) -> YouTubeUploadReceipt | None:
+        raw = self._all().get(idempotency_key)
+        return _receipt_from_json(raw) if raw is not None else None
+
+    def load_by_remote_id(self, remote_id: str) -> YouTubeUploadReceipt | None:
+        for raw in self._all().values():
+            receipt = _receipt_from_json(raw)
+            if receipt.remote_id == remote_id:
+                return receipt
+        return None
+
+    def save(self, receipt: YouTubeUploadReceipt) -> None:
+        _validate_receipt(receipt)
+        values = self._all()
+        values[receipt.idempotency_key] = {
+            "idempotency_key": receipt.idempotency_key,
+            "payload_sha256": receipt.payload_sha256,
+            "video_sha256": receipt.video_sha256,
+            "video_size": receipt.video_size,
+            "video_media_type": receipt.video_media_type,
+            "state": receipt.state,
+            "initialization_attempted": receipt.initialization_attempted,
+            "session_url": receipt.session_url,
+            "remote_id": receipt.remote_id,
+            "thumbnail_uploaded": receipt.thumbnail_uploaded,
+            "target_at_utc": receipt.target_at_utc,
+        }
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._path.with_suffix(self._path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.replace(temporary, self._path)
+
+    def _all(self) -> dict[str, dict[str, object]]:
+        if not self._path.is_file():
+            return {}
+        try:
+            value = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            raise ProviderOperationError(
+                code="INVALID_PAYLOAD",
+                sanitized_detail="Локальный YouTube upload receipt store повреждён.",
+            ) from None
+        if not isinstance(value, dict) or any(
+            not isinstance(key, str) or not isinstance(item, dict) for key, item in value.items()
+        ):
+            raise ProviderOperationError(
+                code="INVALID_PAYLOAD",
+                sanitized_detail="Локальный YouTube upload receipt store имеет неверный формат.",
+            )
+        return {key: dict(item) for key, item in value.items()}
 
 
 def youtube_request(
@@ -74,23 +198,123 @@ class YouTubePublisher:
         api_base: str = YOUTUBE_API_BASE,
         upload_base: str = YOUTUBE_UPLOAD_BASE,
         chunk_size: int = 8 * 1024 * 1024,
+        receipt_store: YouTubeUploadReceiptStore | None = None,
+        processing_max_polls: int = 20,
+        processing_poll: Callable[[int], None] | None = None,
     ) -> None:
         if not channel_id:
             raise ValueError("Для YouTube adapter нужен channel_id.")
         if chunk_size <= 0:
             raise ValueError("Размер YouTube upload chunk должен быть положительным.")
+        if processing_max_polls < 1:
+            raise ValueError("YouTube processing_max_polls должен быть не меньше 1.")
         self._transport = transport
         self._channel_id = channel_id
         self._api_base = api_base.rstrip("/")
         self._upload_base = upload_base.rstrip("/")
         self._chunk_size = chunk_size
-        self._cancelled: set[str] = set()
+        self._receipt_store = receipt_store or InMemoryYouTubeUploadReceiptStore()
+        self._processing_max_polls = processing_max_polls
+        self._processing_poll = processing_poll or (lambda _attempt: None)
 
     def prepare(self, request: PublicationRequest) -> PreparedPublication:
         self._validate_request(request)
         video_path, video_size, video_media_type, metadata, cover_path = self._prepare_input(
             request
         )
+        video_sha256 = self._string(
+            self._object(request.payload, "master", provider="YouTube"),
+            "sha256",
+            provider="YouTube",
+        )
+        receipt = self._load_or_start_receipt(
+            request=request,
+            video_sha256=video_sha256,
+            video_size=video_size,
+            video_media_type=video_media_type,
+        )
+        if receipt.state == "cancelled":
+            raise ProviderOperationError(
+                code="RECEIPT_MISMATCH",
+                sanitized_detail="Отменённый YouTube receipt нельзя повторно использовать.",
+            )
+        if receipt.remote_id is not None:
+            resource = self._wait_for_processing(
+                receipt.remote_id, idempotency_key=f"{request.idempotency_key}:processing"
+            )
+            snapshot = self._snapshot_from_resource(resource)
+            return self._prepared_after_processing(
+                snapshot=snapshot,
+                receipt=receipt,
+                cover_path=cover_path,
+                idempotency_key=request.idempotency_key,
+            )
+        if receipt.session_url is None:
+            # An initial POST may have reached YouTube even if its response was
+            # lost.  Search for its immutable identity instead of risking a
+            # second private video.  A missing result stays retryable.
+            if not receipt.initialization_attempted:
+                receipt = self._initialize_upload_session(
+                    request=request,
+                    metadata=metadata,
+                    video_size=video_size,
+                    video_media_type=video_media_type,
+                    receipt=receipt,
+                )
+            else:
+                recovered = self._find_video_by_identity(request)
+                if recovered is None:
+                    raise ProviderOperationError(
+                        code="UNKNOWN_PROVIDER_OUTCOME",
+                        sanitized_detail=(
+                            "YouTube upload session не сохранён; нужен status-first recovery."
+                        ),
+                    )
+                snapshot = self._snapshot_from_resource(recovered)
+                receipt = replace(receipt, state="uploaded", remote_id=snapshot.remote_id)
+                self._receipt_store.save(receipt)
+                resource = self._wait_for_processing(
+                    snapshot.remote_id, idempotency_key=f"{request.idempotency_key}:processing"
+                )
+                return self._prepared_after_processing(
+                    snapshot=self._snapshot_from_resource(resource),
+                    receipt=receipt,
+                    cover_path=cover_path,
+                    idempotency_key=request.idempotency_key,
+                )
+        resource = self._upload_resumable(
+            receipt=receipt,
+            video_path=video_path,
+            video_size=video_size,
+            video_media_type=video_media_type,
+            idempotency_key=request.idempotency_key,
+        )
+        snapshot = self._snapshot_from_resource(resource)
+        receipt = replace(receipt, state="uploaded", remote_id=snapshot.remote_id)
+        self._receipt_store.save(receipt)
+        resource = self._wait_for_processing(
+            snapshot.remote_id, idempotency_key=f"{request.idempotency_key}:processing"
+        )
+        return self._prepared_after_processing(
+            snapshot=self._snapshot_from_resource(resource),
+            receipt=receipt,
+            cover_path=cover_path,
+            idempotency_key=request.idempotency_key,
+        )
+
+    def _initialize_upload_session(
+        self,
+        *,
+        request: PublicationRequest,
+        metadata: Mapping[str, object],
+        video_size: int,
+        video_media_type: str,
+        receipt: YouTubeUploadReceipt,
+    ) -> YouTubeUploadReceipt:
+        receipt = replace(receipt, initialization_attempted=True)
+        # Persist before the irreversible initial POST. If its response is
+        # lost, a restart reconciles immutable tags and never posts again.
+        self._receipt_store.save(receipt)
         title = self._string(metadata, "title", provider="YouTube")
         description = self._string(metadata, "description", provider="YouTube")
         tags = self._strings(metadata.get("tags", []), provider="YouTube")
@@ -130,25 +354,34 @@ class YouTubePublisher:
                 code="INVALID_PAYLOAD",
                 sanitized_detail="YouTube не вернул безопасный resumable upload URL.",
             )
-        resource = self._upload_resumable(
-            session_url=session_url,
-            video_path=video_path,
-            video_size=video_size,
-            video_media_type=video_media_type,
-            idempotency_key=request.idempotency_key,
-        )
-        snapshot = self._snapshot_from_resource(resource)
-        if snapshot.state != "prepared" or snapshot.payload_sha256 != request.payload_sha256:
+        updated = replace(receipt, state="uploading", session_url=session_url)
+        self._receipt_store.save(updated)
+        return updated
+
+    def _prepared_after_processing(
+        self,
+        *,
+        snapshot: PublicationSnapshot,
+        receipt: YouTubeUploadReceipt,
+        cover_path: Path | None,
+        idempotency_key: str,
+    ) -> PreparedPublication:
+        if (
+            snapshot.state not in {"prepared", "armed"}
+            or snapshot.payload_sha256 != receipt.payload_sha256
+        ):
             raise ProviderOperationError(
                 code="RECEIPT_MISMATCH",
                 sanitized_detail="YouTube подтвердил другой private video receipt.",
             )
-        if cover_path is not None:
+        if cover_path is not None and not receipt.thumbnail_uploaded:
             self._upload_thumbnail(
                 remote_id=snapshot.remote_id,
                 cover_path=cover_path,
-                idempotency_key=request.idempotency_key,
+                idempotency_key=idempotency_key,
             )
+            receipt = replace(receipt, thumbnail_uploaded=True)
+            self._receipt_store.save(receipt)
         return PreparedPublication(
             platform="youtube",
             state="prepared",
@@ -170,6 +403,7 @@ class YouTubePublisher:
     ) -> PublicationSnapshot:
         target = self._utc(target_at_utc)
         resource = self._fetch_video(remote_id, idempotency_key=operation_key)
+        self._wait_for_processing(remote_id, idempotency_key=f"{operation_key}:processing")
         existing = self._snapshot_from_resource(resource)
         if existing.state == "public":
             raise ProviderOperationError(
@@ -211,63 +445,89 @@ class YouTubePublisher:
             provider="YouTube",
             accepted_statuses={200},
         )
-        armed = self._snapshot_from_resource(self._json(response, provider="YouTube"))
+        # A videos.update response is not the schedule receipt.  Read the
+        # native publishAt back through videos.list before recording success.
+        self._json(response, provider="YouTube")
+        armed = self._snapshot_from_resource(
+            self._fetch_video(remote_id, idempotency_key=f"{operation_key}:readback")
+        )
         if armed.remote_id != remote_id or armed.state != "armed" or armed.target_at_utc != target:
             raise ProviderOperationError(
                 code="RECEIPT_MISMATCH",
                 sanitized_detail="YouTube не подтвердил запрошенный publishAt.",
             )
+        stored = self._receipt_store.load_by_remote_id(remote_id)
+        if stored is not None:
+            target_text = self._iso(target)
+            if stored.target_at_utc != target_text:
+                self._receipt_store.save(replace(stored, target_at_utc=target_text))
         return armed
 
     def status(self, remote_id: str, *, now: datetime | None = None) -> PublicationSnapshot:
         del now
-        snapshot = self._snapshot_from_resource(
-            self._fetch_video(remote_id, idempotency_key=f"status:{remote_id}")
-        )
-        if remote_id in self._cancelled:
-            return snapshot.model_copy(update={"state": "cancelled"})
+        try:
+            snapshot = self._snapshot_from_resource(
+                self._fetch_video(remote_id, idempotency_key=f"status:{remote_id}")
+            )
+        except ProviderOperationError as exc:
+            receipt = self._receipt_store.load_by_remote_id(remote_id)
+            if (
+                exc.code == "RECEIPT_MISMATCH"
+                and receipt is not None
+                and receipt.state == "cancelled"
+            ):
+                return self._cancelled_snapshot(receipt)
+            raise
+        receipt = self._receipt_store.load_by_remote_id(remote_id)
+        if receipt is not None and receipt.state == "cancelled":
+            raise ProviderOperationError(
+                code="RECEIPT_MISMATCH",
+                sanitized_detail="Удалённый YouTube receipt неожиданно появился снова.",
+            )
         return snapshot
 
     def cancel(self, remote_id: str, *, operation_key: str) -> PublicationSnapshot:
-        snapshot = self.status(remote_id)
+        try:
+            snapshot = self.status(remote_id)
+        except ProviderOperationError as exc:
+            receipt = self._receipt_store.load_by_remote_id(remote_id)
+            if (
+                exc.code == "RECEIPT_MISMATCH"
+                and receipt is not None
+                and receipt.state == "cancelled"
+            ):
+                return self._cancelled_snapshot(receipt)
+            raise
+        if snapshot.state == "cancelled":
+            return snapshot
         if snapshot.state == "public":
             raise ProviderOperationError(
                 code="RECEIPT_MISMATCH",
                 sanitized_detail="Публичное видео YouTube нельзя автоматически снять с публикации.",
             )
-        response = self._send(
+        self._send(
             HttpRequest(
-                method="PUT",
-                url=with_query(f"{self._api_base}/videos", {"part": "status"}),
-                headers={
-                    "Content-Type": "application/json; charset=utf-8",
-                    "X-Goog-Request-Id": operation_key,
-                },
-                body=json_body(
-                    {
-                        "id": remote_id,
-                        "status": {
-                            "privacyStatus": "private",
-                            "publishAt": None,
-                            "selfDeclaredMadeForKids": False,
-                        },
-                    }
-                ),
+                method="DELETE",
+                url=with_query(f"{self._api_base}/videos", {"id": remote_id}),
+                headers={"X-Goog-Request-Id": operation_key},
                 idempotency_key=operation_key,
             ),
             provider="YouTube",
-            accepted_statuses={200},
+            accepted_statuses={204, 404},
         )
-        confirmed = self._snapshot_from_resource(self._json(response, provider="YouTube"))
-        if confirmed.remote_id != remote_id or confirmed.state == "public":
+        receipt = self._receipt_store.load_by_remote_id(remote_id)
+        if receipt is None:
             raise ProviderOperationError(
                 code="RECEIPT_MISMATCH",
-                sanitized_detail="YouTube не подтвердил отмену native schedule.",
+                sanitized_detail="YouTube cancellation не нашёл durable upload receipt.",
             )
-        self._cancelled.add(remote_id)
-        return confirmed.model_copy(
-            update={"state": "cancelled", "target_at_utc": snapshot.target_at_utc}
+        receipt = replace(
+            receipt,
+            state="cancelled",
+            target_at_utc=self._iso(snapshot.target_at_utc) if snapshot.target_at_utc else None,
         )
+        self._receipt_store.save(receipt)
+        return self._cancelled_snapshot(receipt)
 
     def execute(self, remote_id: str, *, operation_key: str, now: datetime) -> PublicationSnapshot:
         """YouTube is native-scheduled, so execution is deliberately status-only."""
@@ -311,10 +571,140 @@ class YouTubePublisher:
             )
         return path, path.stat().st_size, media_type, metadata, cover_path
 
+    def _load_or_start_receipt(
+        self,
+        *,
+        request: PublicationRequest,
+        video_sha256: str,
+        video_size: int,
+        video_media_type: str,
+    ) -> YouTubeUploadReceipt:
+        existing = self._receipt_store.load(request.idempotency_key)
+        if existing is None:
+            receipt = YouTubeUploadReceipt(
+                idempotency_key=request.idempotency_key,
+                payload_sha256=request.payload_sha256,
+                video_sha256=video_sha256,
+                video_size=video_size,
+                video_media_type=video_media_type,
+                state="initializing",
+            )
+            self._receipt_store.save(receipt)
+            return receipt
+        if (
+            existing.payload_sha256 != request.payload_sha256
+            or existing.video_sha256 != video_sha256
+            or existing.video_size != video_size
+            or existing.video_media_type != video_media_type
+        ):
+            raise ProviderOperationError(
+                code="RECEIPT_MISMATCH",
+                sanitized_detail="YouTube upload receipt привязан к другому утверждённому payload.",
+            )
+        return existing
+
+    def _find_video_by_identity(self, request: PublicationRequest) -> dict[str, object] | None:
+        """Reconcile a lost session-initialisation response without reposting.
+
+        The bounded listing is only used after an initial POST has an unknown
+        outcome.  It compares both immutable tags on each candidate; absence
+        deliberately stays retryable rather than issuing another videos.insert.
+        """
+
+        response = self._send(
+            HttpRequest(
+                method="GET",
+                url=with_query(
+                    f"{self._api_base}/search",
+                    {"forMine": "true", "maxResults": "50", "part": "id", "type": "video"},
+                ),
+                headers={"X-Goog-Request-Id": f"{request.idempotency_key}:reconcile"},
+                idempotency_key=f"{request.idempotency_key}:reconcile",
+            ),
+            provider="YouTube",
+            accepted_statuses={200},
+        )
+        payload = self._json(response, provider="YouTube")
+        items = payload.get("items")
+        if not isinstance(items, list):
+            raise ProviderOperationError(
+                code="INVALID_PAYLOAD",
+                sanitized_detail="YouTube search не вернул список video receipts.",
+            )
+        for item in items:
+            if not isinstance(item, Mapping):
+                raise ProviderOperationError(
+                    code="INVALID_PAYLOAD",
+                    sanitized_detail="YouTube search вернул некорректный video receipt.",
+                )
+            identifier = item.get("id")
+            if not isinstance(identifier, Mapping):
+                continue
+            remote_id = identifier.get("videoId")
+            if not isinstance(remote_id, str) or not remote_id:
+                continue
+            resource = self._fetch_video(
+                remote_id, idempotency_key=f"{request.idempotency_key}:reconcile:{remote_id}"
+            )
+            if self._matches_request(resource, request):
+                return resource
+        return None
+
+    def _wait_for_processing(self, remote_id: str, *, idempotency_key: str) -> dict[str, object]:
+        """Poll YouTube processingDetails until success or a bounded outcome."""
+
+        for attempt in range(self._processing_max_polls):
+            resource = self._fetch_video(
+                remote_id, idempotency_key=f"{idempotency_key}:{attempt + 1}"
+            )
+            details = self._object(resource, "processingDetails", provider="YouTube")
+            processing_state = self._string(details, "processingStatus", provider="YouTube")
+            if processing_state == "succeeded":
+                return resource
+            if processing_state in {"failed", "terminated", "rejected"}:
+                raise ProviderOperationError(
+                    code="INVALID_PAYLOAD",
+                    sanitized_detail="YouTube завершил обработку видео с terminal failure.",
+                )
+            if processing_state not in {"processing", "uploaded"}:
+                raise ProviderOperationError(
+                    code="INVALID_PAYLOAD",
+                    sanitized_detail="YouTube вернул неподдерживаемый processing state.",
+                )
+            if attempt + 1 < self._processing_max_polls:
+                self._processing_poll(attempt + 1)
+        raise ProviderOperationError(
+            code="UNKNOWN_PROVIDER_OUTCOME",
+            sanitized_detail="YouTube processing не подтвердил успех в допустимое число опросов.",
+        )
+
+    def _matches_request(self, resource: Mapping[str, object], request: PublicationRequest) -> bool:
+        snippet = self._object(resource, "snippet", provider="YouTube")
+        tags = self._strings(snippet.get("tags", []), provider="YouTube")
+        payload_sha256, request_hash, _target = self._identity_tags(tags)
+        return payload_sha256 == request.payload_sha256 and request_hash == hashlib.sha256(
+            request.idempotency_key.encode()
+        ).hexdigest()
+
+    def _cancelled_snapshot(self, receipt: YouTubeUploadReceipt) -> PublicationSnapshot:
+        if receipt.remote_id is None:
+            raise ProviderOperationError(
+                code="RECEIPT_MISMATCH",
+                sanitized_detail="Отменённый YouTube receipt не содержит remote video ID.",
+            )
+        return PublicationSnapshot(
+            platform="youtube",
+            state="cancelled",
+            remote_id=receipt.remote_id,
+            known_url=f"https://youtu.be/{receipt.remote_id}",
+            payload_sha256=receipt.payload_sha256,
+            target_at_utc=self._datetime_optional(receipt.target_at_utc, provider="YouTube"),
+        )
+
     def _upload_resumable(
         self,
         *,
-        session_url: str,
+        receipt: YouTubeUploadReceipt,
         video_path: Path,
         video_size: int,
         video_media_type: str,
@@ -325,7 +715,19 @@ class YouTubePublisher:
                 code="INVALID_PAYLOAD",
                 sanitized_detail="YouTube master не должен быть пустым.",
             )
-        offset = 0
+        if receipt.session_url is None:
+            raise ProviderOperationError(
+                code="UNKNOWN_PROVIDER_OUTCOME",
+                sanitized_detail="YouTube resumable upload не имеет сохранённого session URL.",
+            )
+        progress_offset, completed = self._query_upload_session(
+            session_url=receipt.session_url,
+            video_size=video_size,
+            idempotency_key=idempotency_key,
+        )
+        if completed is not None:
+            return completed
+        offset = progress_offset
         with video_path.open("rb") as stream:
             while offset < video_size:
                 stream.seek(offset)
@@ -336,37 +738,91 @@ class YouTubePublisher:
                         sanitized_detail="Не удалось прочитать YouTube master для upload.",
                     )
                 end = offset + len(chunk) - 1
-                response = self._send(
-                    HttpRequest(
-                        method="PUT",
-                        url=session_url,
-                        headers={
-                            "Content-Length": str(len(chunk)),
-                            "Content-Type": video_media_type,
-                            "Content-Range": f"bytes {offset}-{end}/{video_size}",
-                            "X-Goog-Request-Id": idempotency_key,
-                        },
-                        body=chunk,
+                try:
+                    response = self._send(
+                        HttpRequest(
+                            method="PUT",
+                            url=receipt.session_url,
+                            headers={
+                                "Content-Length": str(len(chunk)),
+                                "Content-Type": video_media_type,
+                                "Content-Range": f"bytes {offset}-{end}/{video_size}",
+                                "X-Goog-Request-Id": idempotency_key,
+                            },
+                            body=chunk,
+                            idempotency_key=idempotency_key,
+                        ),
+                        provider="YouTube",
+                        accepted_statuses={200, 201, 308},
+                    )
+                except ProviderOperationError as exc:
+                    if exc.code not in {"PROVIDER_TIMEOUT", "UNKNOWN_PROVIDER_OUTCOME"}:
+                        raise
+                    # A timeout may occur before or after YouTube accepted the
+                    # chunk.  Query the same session first; never re-init.
+                    offset, completed = self._query_upload_session(
+                        session_url=receipt.session_url,
+                        video_size=video_size,
                         idempotency_key=idempotency_key,
-                    ),
-                    provider="YouTube",
-                    accepted_statuses={200, 201, 308},
-                )
+                    )
+                    if completed is not None:
+                        return completed
+                    continue
                 if response.status_code in {200, 201}:
                     return self._json(response, provider="YouTube")
-                next_offset = self._resumable_offset(response, current_end=end)
-                if next_offset <= offset:
+                next_offset = self._resumable_offset(response)
+                if next_offset is None:
+                    # 308 without Range is intentionally ambiguous.  A status
+                    # probe has a different wire form and is the only source
+                    # of truth for the next offset.
+                    next_offset, completed = self._query_upload_session(
+                        session_url=receipt.session_url,
+                        video_size=video_size,
+                        idempotency_key=idempotency_key,
+                    )
+                    if completed is not None:
+                        return completed
+                if next_offset < 0 or next_offset > video_size:
                     raise ProviderOperationError(
                         code="UNKNOWN_PROVIDER_OUTCOME",
-                        sanitized_detail=(
-                            "YouTube resumable upload не подтвердил продвижение chunk."
-                        ),
+                        sanitized_detail="YouTube resumable upload вернул неверный offset.",
                     )
                 offset = next_offset
         raise ProviderOperationError(
             code="UNKNOWN_PROVIDER_OUTCOME",
             sanitized_detail="YouTube resumable upload завершился без video receipt.",
         )
+
+    def _query_upload_session(
+        self,
+        *,
+        session_url: str,
+        video_size: int,
+        idempotency_key: str,
+    ) -> tuple[int, dict[str, object] | None]:
+        """Return authoritative resumable progress for the saved session URL."""
+
+        response = self._send(
+            HttpRequest(
+                method="PUT",
+                url=session_url,
+                headers={
+                    "Content-Length": "0",
+                    "Content-Range": f"bytes */{video_size}",
+                    "X-Goog-Request-Id": f"{idempotency_key}:status",
+                },
+                idempotency_key=f"{idempotency_key}:status",
+            ),
+            provider="YouTube",
+            accepted_statuses={200, 201, 308},
+        )
+        if response.status_code in {200, 201}:
+            return video_size, self._json(response, provider="YouTube")
+        offset = self._resumable_offset(response)
+        # YouTube defines a 308 without Range on the status request as zero
+        # accepted bytes.  It is safe to resend from byte zero on this same
+        # session and it must never cause a new videos.insert.
+        return (0 if offset is None else offset), None
 
     def _upload_thumbnail(self, *, remote_id: str, cover_path: Path, idempotency_key: str) -> None:
         response = self._send(
@@ -395,7 +851,8 @@ class YouTubePublisher:
             HttpRequest(
                 method="GET",
                 url=with_query(
-                    f"{self._api_base}/videos", {"id": remote_id, "part": "snippet,status"}
+                    f"{self._api_base}/videos",
+                    {"id": remote_id, "part": "snippet,status,processingDetails"},
                 ),
                 headers={"X-Goog-Request-Id": idempotency_key},
                 idempotency_key=idempotency_key,
@@ -488,10 +945,10 @@ class YouTubePublisher:
         return response
 
     @staticmethod
-    def _resumable_offset(response: HttpResponse, *, current_end: int) -> int:
+    def _resumable_offset(response: HttpResponse) -> int | None:
         range_header = YouTubePublisher._header(response.headers, "range")
         if range_header is None:
-            return current_end + 1
+            return None
         try:
             _unit, accepted = range_header.split("=", maxsplit=1)
             _start, accepted_end = accepted.rsplit("-", maxsplit=1)
@@ -662,3 +1119,108 @@ class YouTubePublisher:
                 sanitized_detail=f"{provider} вернул timestamp без timezone.",
             )
         return result.astimezone(UTC)
+
+
+def _receipt_from_json(value: Mapping[str, object]) -> YouTubeUploadReceipt:
+    try:
+        receipt = YouTubeUploadReceipt(
+            idempotency_key=_json_string(value, "idempotency_key"),
+            payload_sha256=_json_string(value, "payload_sha256"),
+            video_sha256=_json_string(value, "video_sha256"),
+            video_size=_json_positive_int(value, "video_size"),
+            video_media_type=_json_string(value, "video_media_type"),
+            state=_json_upload_state(value.get("state")),
+            initialization_attempted=_json_bool(
+                value.get("initialization_attempted"), default=False
+            ),
+            session_url=_json_optional_string(value.get("session_url")),
+            remote_id=_json_optional_string(value.get("remote_id")),
+            thumbnail_uploaded=_json_bool(value.get("thumbnail_uploaded"), default=False),
+            target_at_utc=_json_optional_string(value.get("target_at_utc")),
+        )
+    except (TypeError, ValueError):
+        raise ProviderOperationError(
+            code="INVALID_PAYLOAD",
+            sanitized_detail="Локальный YouTube upload receipt имеет неверный формат.",
+        ) from None
+    _validate_receipt(receipt)
+    return receipt
+
+
+def _validate_receipt(receipt: YouTubeUploadReceipt) -> None:
+    if (
+        not receipt.idempotency_key
+        or len(receipt.payload_sha256) != 64
+        or len(receipt.video_sha256) != 64
+        or receipt.video_size <= 0
+        or not receipt.video_media_type.startswith("video/")
+    ):
+        raise ProviderOperationError(
+            code="INVALID_PAYLOAD",
+            sanitized_detail="Локальный YouTube upload receipt имеет неверный формат.",
+        )
+    if receipt.session_url is not None and (
+        not receipt.session_url.startswith("https://")
+        or _contains_secret_query(receipt.session_url)
+    ):
+        raise ProviderOperationError(
+            code="INVALID_PAYLOAD",
+            sanitized_detail=(
+                "Локальный YouTube upload receipt содержит небезопасный session URL."
+            ),
+        )
+    if receipt.state == "uploading" and receipt.session_url is None:
+        raise ProviderOperationError(
+            code="INVALID_PAYLOAD",
+            sanitized_detail="YouTube uploading receipt не содержит session URL.",
+        )
+    if receipt.state in {"uploaded", "cancelled"} and receipt.remote_id is None:
+        raise ProviderOperationError(
+            code="INVALID_PAYLOAD",
+            sanitized_detail="YouTube completed receipt не содержит remote video ID.",
+        )
+
+
+def _contains_secret_query(url: str) -> bool:
+    from urllib.parse import parse_qsl, urlsplit
+
+    return any(
+        any(marker in key.lower() for marker in ("token", "secret", "authorization"))
+        for key, _value in parse_qsl(urlsplit(url).query, keep_blank_values=True)
+    )
+
+
+def _json_string(value: Mapping[str, object], key: str) -> str:
+    item = value.get(key)
+    if not isinstance(item, str) or not item:
+        raise ValueError(key)
+    return item
+
+
+def _json_optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError("optional string")
+    return value
+
+
+def _json_positive_int(value: Mapping[str, object], key: str) -> int:
+    item = value.get(key)
+    if not isinstance(item, int) or isinstance(item, bool) or item <= 0:
+        raise ValueError(key)
+    return item
+
+
+def _json_bool(value: object, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError("bool")
+    return value
+
+
+def _json_upload_state(value: object) -> YouTubeUploadState:
+    if value not in {"initializing", "uploading", "uploaded", "cancelled"}:
+        raise ValueError("state")
+    return cast(YouTubeUploadState, value)
