@@ -215,6 +215,73 @@ def test_terminal_recovery_opens_one_incident_and_alert_job_then_preserves_it_on
     assert delivery is not None and delivery["state"] == "retry_wait"
 
 
+@pytest.mark.parametrize("failed_platform", ("youtube", "dzen"))
+def test_terminal_status_incident_uses_the_actual_failing_native_platform(
+    tmp_path: Path, failed_platform: Platform
+) -> None:
+    class TerminalNativeStatus(ReplayPublisher):
+        terminal = False
+
+        def status(
+            self, remote_id: str, *, now: datetime | None = None
+        ) -> PublicationSnapshot:
+            if self.terminal:
+                raise PermissionError(f"{self.platform} permission denied")
+            return super().status(remote_id, now=now)
+
+    database = _database(tmp_path)
+    publishers = _publishers()
+    native = TerminalNativeStatus(failed_platform)
+    publishers[failed_platform] = native
+    publishers["telegram"].fail("execute")
+    worker = PublicationWorker(
+        database=database,
+        publishers=publishers,
+        alert_transport=ReplayAlertTransport(),
+    )
+    assert worker.run_once(now=BEFORE_TARGET).outcome == "scheduled"
+    assert worker.run_once(now=TARGET - timedelta(minutes=29)).outcome == "preflight_ok"
+    assert worker.run_once(now=TARGET).outcome == "recovering"
+
+    publishers["telegram"].recover("execute")
+    native.terminal = True
+    terminal = worker.run_once(now=TARGET + timedelta(minutes=1))
+
+    assert terminal.outcome == "needs_attention"
+    with database.connect() as connection:
+        incident = connection.execute(
+            "SELECT platform, error_code FROM incidents"
+        ).fetchone()
+    assert incident is not None
+    assert tuple(incident) == (failed_platform, "PROVIDER_PERMISSION_DENIED")
+
+
+def test_post_target_restart_prioritizes_target_reconciliation_over_overdue_preflight(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    publishers = _publishers()
+    worker = PublicationWorker(database=database, publishers=publishers)
+    assert worker.run_once(now=BEFORE_TARGET).outcome == "scheduled"
+    for publisher in publishers.values():
+        publisher.calls.clear()
+
+    result = worker.run_once(now=TARGET + timedelta(minutes=1))
+
+    assert result.outcome == "published"
+    assert not [
+        call for publisher in publishers.values() for call in publisher.calls if call[0] == "cancel"
+    ]
+    with database.connect() as connection:
+        jobs = JobStore.rows(connection, "release-recovery-pipeline")
+        release = database.release_by_id(connection, "release-recovery-pipeline")
+    preflight = next(job for job in jobs if job["kind"] == "publication_preflight")
+    target_job = next(job for job in jobs if job["kind"] == "telegram_publish_reconcile")
+    assert preflight["state"] == "cancelled"
+    assert target_job["state"] == "succeeded"
+    assert release is not None and release.state == "published"
+
+
 def test_crash_after_telegram_side_effect_is_reconciled_without_second_execute(
     tmp_path: Path,
 ) -> None:

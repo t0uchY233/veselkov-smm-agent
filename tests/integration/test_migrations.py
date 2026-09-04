@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from pathlib import Path
 
@@ -37,7 +38,7 @@ def test_existing_slice_one_database_upgrades_to_current_schema(tmp_path: Path) 
             for row in upgraded.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
 
-    assert [row["version"] for row in versions] == [1, 2, 3, 4, 5]
+    assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6]
     assert "revision_target" in release_columns
     assert "recording_watch_initialized_at" in release_columns
     assert {
@@ -244,3 +245,62 @@ def test_existing_slice_four_publication_rows_keep_unknown_recovery_identity(
         ).fetchone()
 
     assert recipient is not None and recipient["recipient"] == "276042853"
+
+
+def test_existing_slice_five_notification_job_gets_release_identity(tmp_path: Path) -> None:
+    database = Database(tmp_path)
+    database.path.parent.mkdir(parents=True)
+    migrations = Path(__file__).parents[2] / "migrations"
+    connection = sqlite3.connect(database.path)
+    try:
+        for version in range(1, 6):
+            name = f"{version:04d}_" + {
+                1: "initial.sql",
+                2: "editorial.sql",
+                3: "video.sql",
+                4: "publication.sql",
+                5: "recovery.sql",
+            }[version]
+            connection.executescript((migrations / name).read_text(encoding="utf-8"))
+            connection.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (version, "2026-09-04T00:00:00Z"),
+            )
+        connection.execute(
+            """
+            INSERT INTO releases (
+                release_id, topic, state, revision, active, created_at, updated_at
+            ) VALUES ('release-slice5-alert', 'Тема', 'needs_attention', 1, 1, ?, ?)
+            """,
+            ("2026-09-04T00:00:00Z", "2026-09-04T00:00:00Z"),
+        )
+        connection.execute(
+            """
+            INSERT INTO jobs (
+                job_id, release_id, kind, state, due_at, attempts, retry_policy_id,
+                idempotency_key, payload_json, created_at, updated_at
+            ) VALUES ('notification-slice5', 'release-slice5-alert', 'notification_deliver',
+                'queued', ?, 0, 'notification-1m-5m-15m', 'notification:legacy', ?, ?, ?)
+            """,
+            (
+                "2026-09-04T00:00:00Z",
+                '{"incident_id":"incident","notification_id":"notification",'
+                '"recipient":"276042853","request_sha256":"'
+                + "a" * 64
+                + '"}',
+                "2026-09-04T00:00:00Z",
+                "2026-09-04T00:00:00Z",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    database.initialize()
+
+    with database.connect() as upgraded:
+        job = upgraded.execute(
+            "SELECT payload_json FROM jobs WHERE job_id = 'notification-slice5'"
+        ).fetchone()
+    assert job is not None
+    assert json.loads(str(job["payload_json"]))["release_id"] == "release-slice5-alert"

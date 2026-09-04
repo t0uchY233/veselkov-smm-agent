@@ -7,17 +7,20 @@ from typing import cast
 
 from smm_agent.contracts.publication import (
     SARDOR_TELEGRAM_RECIPIENT,
+    NotificationJobPayload,
     NotificationReceipt,
     NotificationRequest,
     Platform,
     RecoveryError,
     RecoveryErrorCode,
+    notification_request_sha256,
 )
 from smm_agent.domain.notification.ports import AlertTransport
 from smm_agent.domain.publication.service import retry_decision
 from smm_agent.platform.db import Database
 from smm_agent.platform.ids import uuid7
 from smm_agent.platform.jobs import JobClaim, JobStore
+from smm_agent.platform.redaction import sanitize_recovery_error
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +36,10 @@ class NotificationDeliveryError(RuntimeError):
     def __init__(self, error: RecoveryError) -> None:
         super().__init__(error.code)
         self.error = error
+
+
+class _StaleNotificationClaim(RuntimeError):
+    """Abort a transaction so a replaced claim cannot commit alert state."""
 
 
 def _iso(instant: datetime) -> str:
@@ -86,34 +93,91 @@ def alert_body(request: NotificationRequest) -> str:
     )
 
 
+def _validate_job_payload(
+    connection: sqlite3.Connection, *, claim: JobClaim, notification_id: str, now: str
+) -> NotificationRequest | None:
+    """Validate the complete durable payload before a send can start."""
+
+    payload = NotificationJobPayload.model_validate_json(claim.payload_json)
+    if payload.notification_id != notification_id:
+        raise ValueError("Notification job payload ссылается на другое уведомление.")
+    request = _notification_request(connection, notification_id)
+    if (
+        payload.incident_id != request.incident_id
+        or payload.recipient != request.recipient
+        or payload.release_id != request.release_id
+        or claim.release_id != request.release_id
+        or payload.request_sha256 != notification_request_sha256(request)
+    ):
+        raise ValueError("Notification job payload не совпадает с локальным incident request.")
+    if not JobStore.is_live_claim(connection, claim=claim, now=now):
+        return None
+    return request
+
+
 def _start_attempt(
     connection: sqlite3.Connection, *, claim: JobClaim, notification_id: str, now: str
-) -> NotificationRequest:
-    request = _notification_request(connection, notification_id)
+) -> tuple[NotificationRequest, bool] | None:
+    request = _validate_job_payload(
+        connection, claim=claim, notification_id=notification_id, now=now
+    )
+    if request is None:
+        return None
     row = connection.execute(
         "SELECT state FROM notifications WHERE notification_id = ?", (notification_id,)
     ).fetchone()
     if row is None:
         raise ValueError("Notification job ссылается на отсутствующее уведомление.")
     if row["state"] == "delivered":
-        return request
-    connection.execute(
+        return request, True
+    existing_attempt = connection.execute(
+        """
+        SELECT 1 FROM notification_attempts
+        WHERE notification_id = ? AND job_attempt_id = ? AND finished_at IS NULL
+        """,
+        (notification_id, claim.attempt_id),
+    ).fetchone()
+    if existing_attempt is not None:
+        return request, False
+    updated = connection.execute(
         """
         UPDATE notifications
         SET state = 'sending', attempts = attempts + 1, updated_at = ?
         WHERE notification_id = ? AND state != 'delivered'
+          AND EXISTS (
+              SELECT 1 FROM jobs
+              WHERE job_id = ? AND state = 'running' AND active_attempt_id = ?
+                AND lease_epoch = ? AND lease_until > ?
+          )
         """,
-        (now, notification_id),
+        (now, notification_id, claim.job_id, claim.attempt_id, claim.lease_epoch, now),
     )
-    connection.execute(
+    if updated.rowcount != 1:
+        raise _StaleNotificationClaim("Уведомление уже изменено другим обработчиком.")
+    inserted = connection.execute(
         """
-        INSERT INTO notification_attempts (
-            attempt_id, notification_id, job_attempt_id, started_at
-        ) VALUES (?, ?, ?, ?)
+        INSERT INTO notification_attempts (attempt_id, notification_id, job_attempt_id, started_at)
+        SELECT ?, ?, ?, ?
+        WHERE EXISTS (
+            SELECT 1 FROM jobs
+            WHERE job_id = ? AND state = 'running' AND active_attempt_id = ?
+              AND lease_epoch = ? AND lease_until > ?
+        )
         """,
-        (uuid7(), notification_id, claim.attempt_id, now),
+        (
+            uuid7(),
+            notification_id,
+            claim.attempt_id,
+            now,
+            claim.job_id,
+            claim.attempt_id,
+            claim.lease_epoch,
+            now,
+        ),
     )
-    return request
+    if inserted.rowcount != 1:
+        raise _StaleNotificationClaim("Не удалось зафиксировать fenced alert attempt.")
+    return request, False
 
 
 def _mark_delivered(
@@ -123,28 +187,59 @@ def _mark_delivered(
     receipt: NotificationReceipt,
     now: str,
 ) -> bool:
+    if not JobStore.is_live_claim(connection, claim=claim, now=now):
+        return False
     cursor = connection.execute(
         """
         UPDATE notifications
         SET state = 'delivered', delivered_at = ?, updated_at = ?,
             last_error_code = NULL, last_error_detail = NULL, last_error_at = NULL
-        WHERE notification_id = ?
+        WHERE notification_id = ? AND state IN ('queued', 'sending', 'retry_wait')
+          AND EXISTS (
+              SELECT 1 FROM jobs
+              WHERE job_id = ? AND state = 'running' AND active_attempt_id = ?
+                AND lease_epoch = ? AND lease_until > ?
+          )
         """,
-        (_iso(receipt.delivered_at), now, receipt.notification_id),
+        (
+            _iso(receipt.delivered_at),
+            now,
+            receipt.notification_id,
+            claim.job_id,
+            claim.attempt_id,
+            claim.lease_epoch,
+            now,
+        ),
     )
     if cursor.rowcount != 1:
-        raise RuntimeError("Уведомление исчезло во время доставки.")
+        return False
     attempt = connection.execute(
         """
         UPDATE notification_attempts
         SET finished_at = ?, outcome = 'delivered', provider_receipt_id = ?
         WHERE notification_id = ? AND job_attempt_id = ? AND finished_at IS NULL
+          AND EXISTS (
+              SELECT 1 FROM jobs
+              WHERE job_id = ? AND state = 'running' AND active_attempt_id = ?
+                AND lease_epoch = ? AND lease_until > ?
+          )
         """,
-        (now, receipt.provider_receipt_id, receipt.notification_id, claim.attempt_id),
+        (
+            now,
+            receipt.provider_receipt_id,
+            receipt.notification_id,
+            claim.attempt_id,
+            claim.job_id,
+            claim.attempt_id,
+            claim.lease_epoch,
+            now,
+        ),
     )
-    if attempt.rowcount > 1:
-        raise RuntimeError("Для одного job attempt создано несколько notification attempts.")
-    return JobStore.mark_succeeded(connection, claim=claim, now=now)
+    if attempt.rowcount != 1:
+        raise _StaleNotificationClaim("Fenced alert attempt отсутствует при доставке.")
+    if not JobStore.mark_succeeded(connection, claim=claim, now=now):
+        raise _StaleNotificationClaim("Notification job потерял fenced lease.")
+    return True
 
 
 def _mark_failure(
@@ -156,8 +251,16 @@ def _mark_failure(
     now: datetime,
 ) -> NotificationDelivery:
     now_text = _iso(now)
+    error = sanitize_recovery_error(error)
+    if not JobStore.is_live_claim(connection, claim=claim, now=now_text):
+        return NotificationDelivery(request.notification_id, "stale")
     job = connection.execute(
-        "SELECT attempts FROM jobs WHERE job_id = ?", (claim.job_id,)
+        """
+        SELECT attempts FROM jobs
+        WHERE job_id = ? AND state = 'running' AND active_attempt_id = ?
+          AND lease_epoch = ? AND lease_until > ?
+        """,
+        (claim.job_id, claim.attempt_id, claim.lease_epoch, now_text),
     ).fetchone()
     if job is None:
         raise RuntimeError("Notification job исчез до фиксации ошибки.")
@@ -165,20 +268,42 @@ def _mark_failure(
     if decision.disposition == "retry":
         assert decision.retry_after_seconds is not None
         due_at = _iso(now + timedelta(seconds=decision.retry_after_seconds))
-        connection.execute(
+        updated = connection.execute(
             """
             UPDATE notifications
             SET state = 'retry_wait', last_error_code = ?, last_error_detail = ?,
                 last_error_at = ?, updated_at = ?
-            WHERE notification_id = ?
+            WHERE notification_id = ? AND state IN ('queued', 'sending', 'retry_wait')
+              AND EXISTS (
+                  SELECT 1 FROM jobs
+                  WHERE job_id = ? AND state = 'running' AND active_attempt_id = ?
+                    AND lease_epoch = ? AND lease_until > ?
+              )
             """,
-            (error.code, error.sanitized_detail, now_text, now_text, request.notification_id),
+            (
+                error.code,
+                error.sanitized_detail,
+                now_text,
+                now_text,
+                request.notification_id,
+                claim.job_id,
+                claim.attempt_id,
+                claim.lease_epoch,
+                now_text,
+            ),
         )
-        connection.execute(
+        if updated.rowcount != 1:
+            return NotificationDelivery(request.notification_id, "stale")
+        attempt = connection.execute(
             """
             UPDATE notification_attempts
             SET finished_at = ?, outcome = 'retry_wait', error_code = ?, sanitized_detail = ?
             WHERE notification_id = ? AND job_attempt_id = ? AND finished_at IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM jobs
+                  WHERE job_id = ? AND state = 'running' AND active_attempt_id = ?
+                    AND lease_epoch = ? AND lease_until > ?
+              )
             """,
             (
                 now_text,
@@ -186,12 +311,18 @@ def _mark_failure(
                 error.sanitized_detail,
                 request.notification_id,
                 claim.attempt_id,
+                claim.job_id,
+                claim.attempt_id,
+                claim.lease_epoch,
+                now_text,
             ),
         )
+        if attempt.rowcount != 1:
+            raise _StaleNotificationClaim("Fenced alert attempt отсутствует при retry.")
         if not JobStore.mark_retry_wait(
             connection, claim=claim, error=error, due_at=due_at, now=now_text
         ):
-            return NotificationDelivery(request.notification_id, "stale")
+            raise _StaleNotificationClaim("Notification job потерял fenced lease.")
         return NotificationDelivery(
             request.notification_id, "retry_wait", decision.retry_after_seconds
         )
@@ -199,25 +330,59 @@ def _mark_failure(
     # Both a closed-contract error and retry exhaustion leave the local
     # incident open.  The job is terminal so a later worker cannot keep
     # sending the same alert forever.
-    connection.execute(
+    updated = connection.execute(
         """
         UPDATE notifications
         SET state = 'failed', last_error_code = ?, last_error_detail = ?,
             last_error_at = ?, updated_at = ?
-        WHERE notification_id = ?
+        WHERE notification_id = ? AND state IN ('queued', 'sending', 'retry_wait')
+          AND EXISTS (
+              SELECT 1 FROM jobs
+              WHERE job_id = ? AND state = 'running' AND active_attempt_id = ?
+                AND lease_epoch = ? AND lease_until > ?
+          )
         """,
-        (error.code, error.sanitized_detail, now_text, now_text, request.notification_id),
+        (
+            error.code,
+            error.sanitized_detail,
+            now_text,
+            now_text,
+            request.notification_id,
+            claim.job_id,
+            claim.attempt_id,
+            claim.lease_epoch,
+            now_text,
+        ),
     )
-    connection.execute(
+    if updated.rowcount != 1:
+        return NotificationDelivery(request.notification_id, "stale")
+    attempt = connection.execute(
         """
         UPDATE notification_attempts
         SET finished_at = ?, outcome = 'failed', error_code = ?, sanitized_detail = ?
         WHERE notification_id = ? AND job_attempt_id = ? AND finished_at IS NULL
+          AND EXISTS (
+              SELECT 1 FROM jobs
+              WHERE job_id = ? AND state = 'running' AND active_attempt_id = ?
+                AND lease_epoch = ? AND lease_until > ?
+          )
         """,
-        (now_text, error.code, error.sanitized_detail, request.notification_id, claim.attempt_id),
+        (
+            now_text,
+            error.code,
+            error.sanitized_detail,
+            request.notification_id,
+            claim.attempt_id,
+            claim.job_id,
+            claim.attempt_id,
+            claim.lease_epoch,
+            now_text,
+        ),
     )
+    if attempt.rowcount != 1:
+        raise _StaleNotificationClaim("Fenced alert attempt отсутствует при terminal failure.")
     if not JobStore.mark_failed(connection, claim=claim, error=error, now=now_text):
-        return NotificationDelivery(request.notification_id, "stale")
+        raise _StaleNotificationClaim("Notification job потерял fenced lease.")
     return NotificationDelivery(request.notification_id, "failed")
 
 
@@ -243,17 +408,20 @@ def deliver_notification(
 
     instant = now.astimezone(UTC)
     now_text = _iso(instant)
-    with database.transaction() as connection:
-        request = _start_attempt(
-            connection, claim=claim, notification_id=notification_id, now=now_text
-        )
-        state = connection.execute(
-            "SELECT state FROM notifications WHERE notification_id = ?", (notification_id,)
-        ).fetchone()
-        if state is not None and state["state"] == "delivered":
-            if JobStore.mark_succeeded(connection, claim=claim, now=now_text):
-                return NotificationDelivery(notification_id, "already_delivered")
-            return NotificationDelivery(notification_id, "stale")
+    try:
+        with database.transaction() as connection:
+            started = _start_attempt(
+                connection, claim=claim, notification_id=notification_id, now=now_text
+            )
+            if started is None:
+                return NotificationDelivery(notification_id, "stale")
+            request, already_delivered = started
+            if already_delivered:
+                if JobStore.mark_succeeded(connection, claim=claim, now=now_text):
+                    return NotificationDelivery(notification_id, "already_delivered")
+                return NotificationDelivery(notification_id, "stale")
+    except _StaleNotificationClaim:
+        return NotificationDelivery(notification_id, "stale")
 
     try:
         receipt = transport.lookup(
@@ -272,12 +440,18 @@ def deliver_notification(
             sanitized_detail="Техническое уведомление Telegram временно недоступно.",
         )
     else:
-        with database.transaction() as connection:
-            if _mark_delivered(connection, claim=claim, receipt=receipt, now=now_text):
-                return NotificationDelivery(notification_id, "delivered")
+        try:
+            with database.transaction() as connection:
+                if _mark_delivered(connection, claim=claim, receipt=receipt, now=now_text):
+                    return NotificationDelivery(notification_id, "delivered")
+                return NotificationDelivery(notification_id, "stale")
+        except _StaleNotificationClaim:
             return NotificationDelivery(notification_id, "stale")
 
-    with database.transaction() as connection:
-        return _mark_failure(
-            connection, claim=claim, request=request, error=error, now=instant
-        )
+    try:
+        with database.transaction() as connection:
+            return _mark_failure(
+                connection, claim=claim, request=request, error=error, now=instant
+            )
+    except _StaleNotificationClaim:
+        return NotificationDelivery(notification_id, "stale")

@@ -12,6 +12,7 @@
             "UNKNOWN_PROVIDER_OUTCOME",
             "PROVIDER_AUTH_REQUIRED",
             "PROVIDER_PERMISSION_DENIED",
+            "DZEN_DOM_MISMATCH",
             "INVALID_PAYLOAD",
             "RECEIPT_MISMATCH"
           ],

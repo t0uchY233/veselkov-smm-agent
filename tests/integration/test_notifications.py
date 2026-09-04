@@ -1,7 +1,10 @@
 """Integration coverage for Slice 5 technical alert durability."""
 
-from datetime import UTC, datetime
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 from smm_agent.adapters.notification.replay import ReplayAlertTransport
 from smm_agent.application.notification_service import alert_body, deliver_notification
@@ -76,6 +79,89 @@ def test_open_incident_notification_and_job_are_atomic_and_suppressed(tmp_path: 
             "SELECT count(*) FROM jobs WHERE kind = 'notification_deliver'"
         ).fetchone()
         assert notification_jobs is not None and notification_jobs[0] == 1
+
+
+def test_incident_persistence_redacts_provider_secrets(tmp_path: Path) -> None:
+    database, release_id = _database(tmp_path)
+    _open(database, release_id)
+
+    with database.connect() as connection:
+        incident = connection.execute("SELECT sanitized_detail FROM incidents").fetchone()
+
+    assert incident is not None
+    assert "secret-not-for-chat" not in str(incident["sanitized_detail"])
+    assert "[REDACTED]" in str(incident["sanitized_detail"])
+
+
+def test_notification_payload_must_match_incident_recipient_hash_and_release(
+    tmp_path: Path,
+) -> None:
+    database, release_id = _database(tmp_path)
+    opened = _open(database, release_id)
+    with database.transaction() as connection:
+        row = connection.execute(
+            "SELECT job_id, payload_json FROM jobs WHERE kind = 'notification_deliver'"
+        ).fetchone()
+        assert row is not None
+        payload = json.loads(str(row["payload_json"]))
+        payload["release_id"] = "other-release"
+        connection.execute(
+            "UPDATE jobs SET payload_json = ? WHERE job_id = ?",
+            (json.dumps(payload, sort_keys=True), str(row["job_id"])),
+        )
+    claim = _claim(database, release_id)
+    transport = ReplayAlertTransport()
+
+    with pytest.raises(ValueError, match="не совпадает"):
+        deliver_notification(
+            database,
+            claim=claim,
+            notification_id=opened.notification.notification_id,
+            transport=transport,
+            now=NOW,
+        )
+
+    assert transport.calls == []
+    with database.connect() as connection:
+        notification = connection.execute("SELECT state, attempts FROM notifications").fetchone()
+    assert notification is not None and tuple(notification) == ("queued", 0)
+
+
+def test_stale_notification_claim_cannot_change_alert_or_attempt_state(tmp_path: Path) -> None:
+    database, release_id = _database(tmp_path)
+    opened = _open(database, release_id)
+    first = _claim(database, release_id)
+    later = NOW + timedelta(seconds=61)
+    with database.transaction() as connection:
+        connection.execute(
+            "UPDATE jobs SET lease_until = ? WHERE job_id = ?",
+            ("2000-01-01T00:00:00Z", first.job_id),
+        )
+        replacement = JobStore.claim_due(
+            connection,
+            release_id=release_id,
+            kind="notification_deliver",
+            worker_id="replacement-worker",
+            now=later.isoformat().replace("+00:00", "Z"),
+        )
+    assert replacement is not None
+
+    outcome = deliver_notification(
+        database,
+        claim=first,
+        notification_id=opened.notification.notification_id,
+        transport=ReplayAlertTransport(),
+        now=NOW,
+    )
+
+    assert outcome.outcome == "stale"
+    with database.connect() as connection:
+        notification = connection.execute("SELECT state, attempts FROM notifications").fetchone()
+        attempts = connection.execute("SELECT count(*) FROM notification_attempts").fetchone()
+        job = connection.execute("SELECT active_attempt_id FROM jobs").fetchone()
+    assert notification is not None and tuple(notification) == ("queued", 0)
+    assert attempts is not None and attempts[0] == 0
+    assert job is not None and job["active_attempt_id"] == replacement.attempt_id
 
 
 def test_alert_body_has_required_operational_fields_without_provider_detail(tmp_path: Path) -> None:

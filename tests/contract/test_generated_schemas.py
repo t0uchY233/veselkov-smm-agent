@@ -84,6 +84,7 @@ def test_retry_taxonomy_has_exact_recovery_schedules_and_terminal_errors() -> No
         "PROVIDER_PERMISSION_DENIED",
         "INVALID_PAYLOAD",
         "RECEIPT_MISMATCH",
+        "DZEN_DOM_MISMATCH",
     ):
         decision = retry_decision(
             RecoveryError(code=code, sanitized_detail="Terminal replay failure"),

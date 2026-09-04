@@ -1,7 +1,5 @@
 """Narrow SQLite persistence for recovery incidents and their alert jobs."""
 
-import hashlib
-import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -15,9 +13,11 @@ from smm_agent.contracts.publication import (
     Platform,
     RecoveryError,
     RecoveryErrorCode,
+    notification_request_sha256,
 )
 from smm_agent.platform.ids import uuid7
 from smm_agent.platform.jobs import JobStore
+from smm_agent.platform.redaction import sanitize_recovery_error
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,13 +29,6 @@ class IncidentNotification:
 
 def _iso(instant: datetime) -> str:
     return instant.astimezone(UTC).isoformat().replace("+00:00", "Z")
-
-
-def _request_hash(request: NotificationRequest) -> str:
-    encoded = json.dumps(
-        request.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 class IncidentStore:
@@ -60,6 +53,7 @@ class IncidentStore:
         """
 
         now_text = _iso(now)
+        error = sanitize_recovery_error(error)
         platform_part = platform or "global"
         job_part = job_id or "release"
         suppression_key = f"recovery-exhausted:{release_id}:{platform_part}:{job_part}"
@@ -112,7 +106,8 @@ class IncidentStore:
                     notification_id=notification.notification_id,
                     incident_id=notification.incident_id,
                     recipient=notification.recipient,
-                    request_sha256=_request_hash(notification),
+                    release_id=notification.release_id,
+                    request_sha256=notification_request_sha256(notification),
                 )
                 queued_job_id = JobStore.enqueue(
                     connection,
@@ -186,7 +181,8 @@ class IncidentStore:
             notification_id=notification.notification_id,
             incident_id=notification.incident_id,
             recipient=notification.recipient,
-            request_sha256=_request_hash(notification),
+            release_id=notification.release_id,
+            request_sha256=notification_request_sha256(notification),
         )
         queued_job_id = JobStore.enqueue(
             connection,

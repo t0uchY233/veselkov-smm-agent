@@ -1,5 +1,7 @@
 """Versioned contracts for publication preparation and scheduling."""
 
+import hashlib
+import json
 from datetime import datetime
 from typing import Final, Literal
 
@@ -18,6 +20,7 @@ RecoveryErrorCode = Literal[
     "UNKNOWN_PROVIDER_OUTCOME",
     "PROVIDER_AUTH_REQUIRED",
     "PROVIDER_PERMISSION_DENIED",
+    "DZEN_DOM_MISMATCH",
     "INVALID_PAYLOAD",
     "RECEIPT_MISMATCH",
 ]
@@ -43,6 +46,7 @@ TERMINAL_RECOVERY_ERROR_CODES: frozenset[str] = frozenset(
     {
         "PROVIDER_AUTH_REQUIRED",
         "PROVIDER_PERMISSION_DENIED",
+        "DZEN_DOM_MISMATCH",
         "INVALID_PAYLOAD",
         "RECEIPT_MISMATCH",
     }
@@ -188,6 +192,7 @@ class NotificationJobPayload(PublicationContract):
     notification_id: str = Field(min_length=1)
     incident_id: str = Field(min_length=1)
     recipient: Literal["276042853"] = SARDOR_TELEGRAM_RECIPIENT
+    release_id: str = Field(min_length=1)
     request_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
@@ -199,3 +204,12 @@ class NotificationReceipt(PublicationContract):
     recipient: Literal["276042853"] = SARDOR_TELEGRAM_RECIPIENT
     provider_receipt_id: str = Field(min_length=1)
     delivered_at: AwareDatetime
+
+
+def notification_request_sha256(request: NotificationRequest) -> str:
+    """Return the canonical identity of a durable technical alert request."""
+
+    encoded = json.dumps(
+        request.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()

@@ -18,6 +18,11 @@
       "title": "Recipient",
       "type": "string"
     },
+    "release_id": {
+      "minLength": 1,
+      "title": "Release Id",
+      "type": "string"
+    },
     "request_sha256": {
       "pattern": "^[0-9a-f]{64}$",
       "title": "Request Sha256",
@@ -33,6 +38,7 @@
   "required": [
     "notification_id",
     "incident_id",
+    "release_id",
     "request_sha256"
   ],
   "title": "NotificationJobPayload",

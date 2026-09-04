@@ -3,9 +3,10 @@
 import hashlib
 import json
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from smm_agent.adapters.publishing.dzen import dzen_request
 from smm_agent.adapters.publishing.telegram import telegram_request
@@ -14,16 +15,19 @@ from smm_agent.application.editorial_artifacts import store_artifact, verify_art
 from smm_agent.application.editorial_support import canonical_bytes, now_utc
 from smm_agent.application.release_service import IdempotencyConflict, StateConflict
 from smm_agent.contracts.publication import (
+    CancellationJobPayload,
     Platform,
     PreparedPublication,
     PublicationResult,
     PublicationSnapshot,
     PublicationState,
+    RecoveryError,
     RecoveryJobPayload,
     TelegramJobPayload,
 )
 from smm_agent.domain.publication.ports import Publisher
 from smm_agent.domain.publication.service import (
+    retry_decision,
     validate_armed_snapshot,
     validate_future_target,
     validate_link_sources,
@@ -35,6 +39,13 @@ from smm_agent.platform.db import Database
 from smm_agent.platform.ids import uuid7
 from smm_agent.platform.jobs import JobClaim, JobStore
 from smm_agent.platform.publications import PublicationStore
+
+
+@dataclass(frozen=True, slots=True)
+class CancellationReconcileOutcome:
+    """Result of a strictly status-only cancellation reconciliation."""
+
+    state: Literal["cancellation_reconciled", "cancellation_retry_wait", "cancellation_failed"]
 
 
 def _hash(value: object) -> str:
@@ -185,6 +196,157 @@ def _cancel_available(
         except (RuntimeError, ValueError, KeyError):
             cancelled[platform] = snapshot.model_copy(update={"state": "failed"})
     return cancelled
+
+
+def reconcile_cancellation_status(
+    database: Database,
+    *,
+    claim: JobClaim,
+    publishers: dict[Platform, Publisher],
+    now: datetime,
+) -> CancellationReconcileOutcome:
+    """Record current remote state after a failed cancellation without cancelling.
+
+    A cancellation reconciliation is deliberately observation-only.  Once a
+    public receipt might exist, a worker must not make a second cancellation
+    decision: it preserves confirmed receipts and leaves the release in
+    ``needs_attention`` for the human owner.
+    """
+
+    if claim.kind != "publication_cancel_reconcile":
+        raise ValueError("Cancellation reconciliation получила job другого вида.")
+    payload = CancellationJobPayload.model_validate_json(claim.payload_json)
+    if len(set(payload.platforms)) != len(payload.platforms):
+        raise ValueError("Cancellation reconciliation содержит повтор площадки.")
+    instant = now.astimezone(UTC)
+    at = instant.isoformat().replace("+00:00", "Z")
+    with database.connect() as connection:
+        release = database.release_by_id(connection, claim.release_id)
+        if (
+            release is None
+            or not release.active
+            or release.state != "needs_attention"
+            or release.target_at_utc is None
+        ):
+            raise StateConflict("Cancellation reconciliation относится к другому Выпуску.")
+        rows = {
+            cast(Platform, str(row["platform"])): row
+            for row in PublicationStore.rows(connection, claim.release_id)
+        }
+    if not set(payload.platforms) <= set(rows):
+        raise ValueError("Cancellation reconciliation ссылается на неизвестную площадку.")
+
+    snapshots: dict[Platform, PublicationSnapshot] = {}
+    error: RecoveryError | None = None
+    for platform in payload.platforms:
+        row = rows[platform]
+        remote_id = row["remote_id"]
+        if remote_id is None:
+            error = RecoveryError(
+                code="RECEIPT_MISMATCH",
+                sanitized_detail="У cancellation reconciliation нет remote receipt.",
+            )
+            break
+        try:
+            snapshot = publishers[platform].status(str(remote_id), now=instant)
+        except Exception as exception:
+            from smm_agent.application.recovery_service import classify_provider_error
+
+            error = classify_provider_error(exception)
+            break
+        if (
+            snapshot.platform != platform
+            or snapshot.remote_id != str(remote_id)
+            or snapshot.payload_sha256 != str(row["payload_sha256"])
+            or snapshot.target_at_utc is None
+            or snapshot.target_at_utc.astimezone(UTC)
+            != datetime.fromisoformat(
+                str(row["target_at_utc"]).replace("Z", "+00:00")
+            ).astimezone(UTC)
+        ):
+            error = RecoveryError(
+                code="RECEIPT_MISMATCH",
+                sanitized_detail="Cancellation reconciliation получила другой remote receipt.",
+            )
+            break
+        snapshots[platform] = snapshot
+
+    with database.transaction() as connection:
+        current = database.release_by_id(connection, claim.release_id)
+        if (
+            current is None
+            or not current.active
+            or current.state != "needs_attention"
+            or current.target_at_utc is None
+        ):
+            raise StateConflict("Cancellation reconciliation потеряла состояние Выпуска.")
+        current_rows = {
+            cast(Platform, str(row["platform"])): row
+            for row in PublicationStore.rows(connection, claim.release_id)
+        }
+        for platform, snapshot in snapshots.items():
+            row = current_rows[platform]
+            PublicationStore.upsert(
+                connection,
+                release_id=claim.release_id,
+                snapshot=snapshot,
+                target_at_utc=current.target_at_utc,
+                updated_at=at,
+                idempotency_key=(
+                    str(row["idempotency_key"]) if row["idempotency_key"] is not None else None
+                ),
+                operation_key=(
+                    str(row["operation_key"]) if row["operation_key"] is not None else None
+                ),
+            )
+        if error is None:
+            if not JobStore.mark_succeeded(connection, claim=claim, now=at):
+                raise StateConflict("Cancellation reconciliation потеряла fenced lease.")
+            state: Literal[
+                "cancellation_reconciled", "cancellation_retry_wait", "cancellation_failed"
+            ] = "cancellation_reconciled"
+        else:
+            job = connection.execute(
+                "SELECT attempts FROM jobs WHERE job_id = ?", (claim.job_id,)
+            ).fetchone()
+            if job is None:
+                raise StateConflict("Cancellation reconciliation job исчезла.")
+            decision = retry_decision(
+                error, operation="provider", attempt_number=int(job["attempts"])
+            )
+            if decision.disposition == "retry":
+                assert decision.retry_after_seconds is not None
+                due_at = (
+                    instant + timedelta(seconds=decision.retry_after_seconds)
+                ).isoformat().replace("+00:00", "Z")
+                if not JobStore.mark_retry_wait(
+                    connection, claim=claim, error=error, due_at=due_at, now=at
+                ):
+                    raise StateConflict("Cancellation reconciliation потеряла fenced lease.")
+                state = "cancellation_retry_wait"
+            else:
+                if not JobStore.mark_failed(connection, claim=claim, error=error, now=at):
+                    raise StateConflict("Cancellation reconciliation потеряла fenced lease.")
+                state = "cancellation_failed"
+        database.add_event(
+            connection,
+            event_id=uuid7(),
+            name="PublicationCancellationReconciled.v1",
+            occurred_at=at,
+            release_id=claim.release_id,
+            actor="worker",
+            payload={
+                "job_id": claim.job_id,
+                "mode": "status_only",
+                "state": state,
+                "platforms": list(payload.platforms),
+                "observed_states": {
+                    platform: snapshot.state for platform, snapshot in snapshots.items()
+                },
+                "error_code": error.code if error is not None else None,
+            },
+        )
+    return CancellationReconcileOutcome(state=state)
 
 
 def _persist_cancellation_outcome(
@@ -956,7 +1118,16 @@ def execute_telegram_task(
                     if platform == "telegram"
                     else f"arm:{current.release_id}:{platform}:{target.isoformat()}"
                 ),
-            )
+                )
+        # At and after target the T-30 check is obsolete.  Close it in the
+        # same commit as the target reconciliation so a restarted laptop
+        # cannot later run preflight cancellation against public content.
+        JobStore.cancel_kind_jobs(
+            connection,
+            release_id=current.release_id,
+            kind="publication_preflight",
+            now=at,
+        )
         if destination == "recovering":
             telegram_row = current_stored["telegram"]
             publication_key = (

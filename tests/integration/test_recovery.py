@@ -1,6 +1,7 @@
 """GC-04 recovery: status first, preserve receipts, and retry safely."""
 
 import hashlib
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 from smm_agent.adapters.publishing.replay import ReplayPublisher
 from smm_agent.application.recovery_service import reconcile_publication_recovery
 from smm_agent.contracts.publication import Platform, PublicationRequest, PublicationSnapshot
+from smm_agent.domain.publication.ports import DzenDomMismatchError
 from smm_agent.domain.release.model import Release
 from smm_agent.platform.db import Database
 from smm_agent.platform.jobs import JobClaim, JobStore
@@ -279,6 +281,7 @@ def test_terminal_recovery_exposes_outcome_to_atomic_integration_recorder(
 
     assert outcome.state == "needs_attention"
     assert outcome.requires_attention
+    assert outcome.platform == "youtube"
     assert received == [("release-recovery", "PROVIDER_PERMISSION_DENIED")]
     with database.connect() as connection:
         release = database.release_by_id(connection, "release-recovery")
@@ -291,6 +294,62 @@ def test_terminal_recovery_exposes_outcome_to_atomic_integration_recorder(
     assert release is not None and release.state == "needs_attention"
     assert job["state"] == "failed"
     assert event is not None and event["name"] == "RecoveryExhausted.v1"
+
+
+def test_invalid_recovery_payload_is_terminal_without_retry(tmp_path: Path) -> None:
+    database, publishers, _, _ = _recovery_fixture(tmp_path)
+    with database.transaction() as connection:
+        row = connection.execute(
+            "SELECT payload_json FROM jobs WHERE kind = 'publication_recovery'"
+        ).fetchone()
+        assert row is not None
+        payload = json.loads(str(row["payload_json"]))
+        payload["payload_sha256"] = "0" * 64
+        connection.execute(
+            "UPDATE jobs SET payload_json = ? WHERE kind = 'publication_recovery'",
+            (json.dumps(payload, sort_keys=True),),
+        )
+    claim = _claim(database)
+
+    outcome = reconcile_publication_recovery(
+        database, claim=claim, publishers=publishers, now=NOW
+    )
+
+    assert outcome.state == "needs_attention"
+    assert outcome.platform == "telegram"
+    assert outcome.error is not None and outcome.error.code == "INVALID_PAYLOAD"
+    assert outcome.decision is not None and outcome.decision.disposition == "terminal"
+    with database.connect() as connection:
+        job = JobStore.rows(connection, "release-recovery")[0]
+    assert job["state"] == "failed"
+
+
+def test_dzen_dom_mismatch_is_terminal_and_attributed_to_dzen(tmp_path: Path) -> None:
+    class ChangedDzen(RecordingPublisher):
+        def status(
+            self, remote_id: str, *, now: datetime | None = None
+        ) -> PublicationSnapshot:
+            if self.platform == "dzen":
+                raise DzenDomMismatchError()
+            return super().status(remote_id, now=now)
+
+    database, publishers, _, _ = _recovery_fixture(
+        tmp_path,
+        publisher_factory=lambda platform, trace: ChangedDzen(platform, operations=trace),
+    )
+    claim = _claim(database)
+
+    outcome = reconcile_publication_recovery(
+        database, claim=claim, publishers=publishers, now=NOW
+    )
+
+    assert outcome.state == "needs_attention"
+    assert outcome.platform == "dzen"
+    assert outcome.error is not None and outcome.error.code == "DZEN_DOM_MISMATCH"
+    assert outcome.decision is not None and outcome.decision.disposition == "terminal"
+    with database.connect() as connection:
+        job = JobStore.rows(connection, "release-recovery")[0]
+    assert job["state"] == "failed"
 
 
 def test_publication_store_backfills_legacy_nullable_identity_only_once(tmp_path: Path) -> None:

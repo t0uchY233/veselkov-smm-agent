@@ -11,6 +11,7 @@ from smm_agent.application.notification_service import deliver_notification
 from smm_agent.application.publication_service import (
     execute_telegram_task,
     preflight_scheduled_release,
+    reconcile_cancellation_status,
     schedule_release,
 )
 from smm_agent.application.recovery_service import (
@@ -21,7 +22,6 @@ from smm_agent.contracts.publication import (
     NotificationJobPayload,
     Platform,
     PublicationResult,
-    RecoveryJobPayload,
 )
 from smm_agent.domain.notification.ports import AlertTransport
 from smm_agent.domain.publication.ports import Publisher
@@ -197,8 +197,6 @@ class PublicationWorker:
         return PublicationTick(result.state, result)
 
     def _run_recovery(self, *, claim: JobClaim, now: datetime) -> PublicationTick:
-        payload = RecoveryJobPayload.model_validate_json(claim.payload_json)
-
         def record_terminal(connection: sqlite3.Connection, outcome: RecoveryOutcome) -> None:
             if outcome.error is None:
                 raise RuntimeError("Terminal recovery outcome не содержит ошибки.")
@@ -206,7 +204,7 @@ class PublicationWorker:
                 connection,
                 release_id=outcome.release_id,
                 job_id=outcome.job_id,
-                platform=payload.platform,
+                platform=outcome.platform,
                 error=outcome.error,
                 safe_next_action=(
                     "Проверить доступ к площадке и повторно запустить "
@@ -222,6 +220,18 @@ class PublicationWorker:
                 publishers=self.publishers,
                 now=now,
                 terminal_recorder=record_terminal,
+            )
+        return PublicationTick(outcome.state)
+
+    def _run_cancellation_reconcile(
+        self, *, claim: JobClaim, now: datetime
+    ) -> PublicationTick:
+        with self._heartbeat(claim):
+            outcome = reconcile_cancellation_status(
+                self.database,
+                claim=claim,
+                publishers=self.publishers,
+                now=now,
             )
         return PublicationTick(outcome.state)
 
@@ -258,14 +268,25 @@ class PublicationWorker:
 
         eligible_kinds: tuple[str, ...]
         if release.state == "scheduled":
-            eligible_kinds = ("publication_preflight", "telegram_publish_reconcile")
+            target = (
+                datetime.fromisoformat(release.target_at_utc.replace("Z", "+00:00"))
+                if release.target_at_utc is not None
+                else None
+            )
+            # A post-target restart must reconcile the target task before an
+            # overdue T-30 job.  The latter is then closed by the target
+            # transaction, never allowed to issue cancellation side effects.
+            eligible_kinds = (
+                ("telegram_publish_reconcile",)
+                if target is not None and instant >= target.astimezone(UTC)
+                else ("publication_preflight", "telegram_publish_reconcile")
+            )
         elif release.state == "recovering":
             eligible_kinds = ("publication_recovery",)
         elif release.state == "needs_attention":
-            # Cancellation reconciliation stays human-controlled until its
-            # separate status-first policy is implemented. It must never be
-            # accidentally treated as an ordinary retry after a public receipt.
-            eligible_kinds = ("notification_deliver",)
+            # Cancellation reconciliation is status-only. It must never be
+            # treated as an ordinary retry that cancels a public receipt.
+            eligible_kinds = ("publication_cancel_reconcile", "notification_deliver")
         else:
             return PublicationTick("idle")
 
@@ -281,5 +302,17 @@ class PublicationWorker:
                 )
             if kind == "publication_recovery":
                 return self._run_recovery(claim=claim, now=instant)
+            if kind == "publication_cancel_reconcile":
+                return self._run_cancellation_reconcile(claim=claim, now=instant)
             return self._run_notification(claim=claim, now=instant)
+        if release.state == "scheduled" and release.target_at_utc is not None:
+            target = datetime.fromisoformat(release.target_at_utc.replace("Z", "+00:00"))
+            if instant >= target.astimezone(UTC):
+                with self.database.transaction() as connection:
+                    JobStore.cancel_kind_jobs(
+                        connection,
+                        release_id=release.release_id,
+                        kind="publication_preflight",
+                        now=_iso(instant),
+                    )
         return PublicationTick("idle")

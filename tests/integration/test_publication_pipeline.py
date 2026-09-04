@@ -500,6 +500,48 @@ def test_overdue_preflight_preserves_public_receipt_and_never_cancels(
     assert youtube_row["state"] == "public"
 
 
+def test_cancel_reconcile_job_is_status_only_and_never_cancels_after_public_receipt(
+    tmp_path: Path,
+) -> None:
+    database = publication_database(tmp_path)
+    publishers = replay_publishers()
+    scheduled = schedule_release(
+        database,
+        command_id="schedule-cancel-reconcile-status-only",
+        expected_revision=9,
+        publishers=publishers,
+        now=datetime(2026, 9, 4, tzinfo=UTC),
+    )
+    publishers["youtube"].make_public(
+        scheduled.publications["youtube"].remote_id,
+        public_at=datetime(2099, 9, 10, 11, 0, tzinfo=UTC),
+    )
+    result = preflight_scheduled_release(
+        database,
+        command_id="preflight-creates-cancel-reconcile",
+        expected_revision=scheduled.revision,
+        publishers=publishers,
+        now=datetime(2099, 9, 10, 11, 1, tzinfo=UTC),
+    )
+    assert result.state == "needs_attention"
+    for publisher in publishers.values():
+        publisher.calls.clear()
+
+    worker = PublicationWorker(database=database, publishers=publishers)
+    reconciled = worker.run_once(now=datetime(2099, 9, 10, 11, 2, tzinfo=UTC))
+
+    assert reconciled.outcome == "cancellation_reconciled"
+    assert not [
+        call for publisher in publishers.values() for call in publisher.calls if call[0] == "cancel"
+    ]
+    with database.connect() as connection:
+        jobs = JobStore.rows(connection, "release-publication")
+        release = database.release_by_id(connection, "release-publication")
+    cancellation = next(job for job in jobs if job["kind"] == "publication_cancel_reconcile")
+    assert cancellation["state"] == "succeeded"
+    assert release is not None and release.state == "needs_attention"
+
+
 def test_restart_resumes_persisted_receipts_without_rearming_dzen(tmp_path: Path) -> None:
     class ProcessCrashTelegram(ReplayPublisher):
         crashed = False

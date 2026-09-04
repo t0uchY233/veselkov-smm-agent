@@ -218,6 +218,29 @@ def test_terminal_failure_persists_sanitized_error_and_closes_attempt(tmp_path: 
     assert attempt["finished_at"] == "2026-09-04T10:00:20Z"
 
 
+def test_job_persistence_redacts_tokens_and_provider_bodies(tmp_path: Path) -> None:
+    database, release_id, job_id = _database(tmp_path)
+    claim = _claim(database, release_id)
+    error = RecoveryError(
+        code="PROVIDER_TIMEOUT",
+        sanitized_detail='response body {"access_token":"secret-not-for-db"}',
+    )
+
+    with database.transaction() as connection:
+        assert JobStore.mark_failed(
+            connection, claim=claim, error=error, now="2026-09-04T10:00:20Z"
+        )
+    with database.connect() as connection:
+        job = connection.execute(
+            "SELECT last_error_detail FROM jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        attempt = connection.execute(
+            "SELECT detail FROM job_attempts WHERE attempt_id = ?", (claim.attempt_id,)
+        ).fetchone()
+    assert job is not None and "secret-not-for-db" not in str(job["last_error_detail"])
+    assert attempt is not None and "secret-not-for-db" not in str(attempt["detail"])
+
+
 def test_terminal_error_cannot_be_scheduled_for_retry(tmp_path: Path) -> None:
     database, release_id, _ = _database(tmp_path)
     claim = _claim(database, release_id)

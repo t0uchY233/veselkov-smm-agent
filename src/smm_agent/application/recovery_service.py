@@ -19,12 +19,13 @@ from smm_agent.contracts.publication import (
     RecoveryJobPayload,
     RetryDecision,
 )
-from smm_agent.domain.publication.ports import Publisher
+from smm_agent.domain.publication.ports import ProviderOperationError, Publisher
 from smm_agent.domain.publication.service import retry_decision, validate_public_snapshot
 from smm_agent.platform.db import Database
 from smm_agent.platform.ids import uuid7
 from smm_agent.platform.jobs import JobClaim, JobStore
 from smm_agent.platform.publications import PublicationStore
+from smm_agent.platform.redaction import redact_persisted_detail
 
 RecoveryState = Literal["published", "recovering", "retry_wait", "needs_attention"]
 TerminalRecoveryRecorder = Callable[[sqlite3.Connection, "RecoveryOutcome"], None]
@@ -43,6 +44,7 @@ class RecoveryOutcome:
     job_id: str
     state: RecoveryState
     missing_platforms: tuple[Platform, ...]
+    platform: Platform | None = None
     error: RecoveryError | None = None
     decision: RetryDecision | None = None
     requires_attention: bool = False
@@ -56,9 +58,14 @@ def _as_utc_text(instant: datetime) -> str:
     return instant.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
-def _provider_error(exception: Exception) -> RecoveryError:
+def classify_provider_error(exception: Exception) -> RecoveryError:
     """Classify only sanitized provider outcomes; never persist provider bodies."""
 
+    if isinstance(exception, ProviderOperationError):
+        return RecoveryError(
+            code=exception.code,
+            sanitized_detail=redact_persisted_detail(exception.sanitized_detail),
+        )
     if isinstance(exception, TimeoutError):
         return RecoveryError(
             code="PROVIDER_TIMEOUT", sanitized_detail="Таймаут обращения к площадке."
@@ -214,6 +221,7 @@ def _retry_or_terminal(
     target_at_utc: str,
     now: datetime,
     error: RecoveryError,
+    error_platform: Platform | None,
     missing_platforms: tuple[Platform, ...],
     terminal_recorder: TerminalRecoveryRecorder | None,
 ) -> RecoveryOutcome:
@@ -271,6 +279,7 @@ def _retry_or_terminal(
                 job_id=claim.job_id,
                 state="retry_wait",
                 missing_platforms=missing_platforms,
+                platform=error_platform,
                 error=error,
                 decision=decision,
             )
@@ -300,6 +309,7 @@ def _retry_or_terminal(
             job_id=claim.job_id,
             state="needs_attention",
             missing_platforms=missing_platforms,
+            platform=error_platform,
             error=error,
             decision=decision,
             requires_attention=True,
@@ -313,7 +323,7 @@ def _retry_or_terminal(
             actor="worker",
             payload={
                 "job_id": claim.job_id,
-                "platform": payload.platform,
+                "platform": error_platform,
                 "error_code": error.code,
                 "missing_platforms": list(missing_platforms),
             },
@@ -375,31 +385,40 @@ def reconcile_publication_recovery(
             target_at_utc=target_text,
             now=now,
             error=error,
+            error_platform=None,
             missing_platforms=expected_platforms,
             terminal_recorder=terminal_recorder,
         )
 
     snapshots: dict[Platform, PublicationSnapshot] = {}
     payload_row = rows[payload.platform]
-    failures: list[RecoveryError] = []
+    failures: list[tuple[Platform, RecoveryError]] = []
     if str(payload_row["payload_sha256"]) != payload.payload_sha256:
-        failures.append(_receipt_error("Recovery payload содержит другой payload hash."))
+        failures.append(
+            (payload.platform, _payload_error("Recovery payload содержит другой payload hash."))
+        )
     if (
         payload.remote_id is not None
         and payload_row["remote_id"] is not None
         and payload.remote_id != str(payload_row["remote_id"])
     ):
-        failures.append(_receipt_error("Recovery payload содержит другой remote receipt."))
+        failures.append(
+            (payload.platform, _payload_error("Recovery payload содержит другой remote receipt."))
+        )
     if (
         payload_row["idempotency_key"] is not None
         and payload.publication_idempotency_key != str(payload_row["idempotency_key"])
     ):
-        failures.append(_receipt_error("Recovery payload содержит другой idempotency key."))
+        failures.append(
+            (payload.platform, _payload_error("Recovery payload содержит другой idempotency key."))
+        )
     if (
         payload_row["operation_key"] is not None
         and payload.operation_key != str(payload_row["operation_key"])
     ):
-        failures.append(_receipt_error("Recovery payload содержит другой operation key."))
+        failures.append(
+            (payload.platform, _payload_error("Recovery payload содержит другой operation key."))
+        )
     # This is deliberately a complete status pass before a single execute call.
     for platform in expected_platforms:
         row = rows[platform]
@@ -413,13 +432,13 @@ def reconcile_publication_recovery(
         )
         if not remote_id:
             failures.append(
-                _receipt_error("У сохранённого receipt нет remote identity для сверки.")
+                (platform, _receipt_error("У сохранённого receipt нет remote identity для сверки."))
             )
             continue
         try:
             snapshot = publishers[platform].status(remote_id, now=now)
         except Exception as exception:
-            failures.append(_provider_error(exception))
+            failures.append((platform, classify_provider_error(exception)))
             continue
         mismatch = _validate_status(
             snapshot.platform,
@@ -430,7 +449,7 @@ def reconcile_publication_recovery(
             target_at_utc=target,
         )
         if mismatch is not None:
-            failures.append(mismatch)
+            failures.append((platform, mismatch))
             continue
         snapshots[platform] = snapshot
 
@@ -448,7 +467,8 @@ def reconcile_publication_recovery(
             snapshots=snapshots,
             target_at_utc=target_text,
             now=now,
-            error=failures[0],
+            error=failures[0][1],
+            error_platform=failures[0][0],
             missing_platforms=missing,
             terminal_recorder=terminal_recorder,
         )
@@ -470,7 +490,8 @@ def reconcile_publication_recovery(
                 snapshots=snapshots,
                 target_at_utc=target_text,
                 now=now,
-                error=_provider_error(exception),
+                error=classify_provider_error(exception),
+                error_platform="telegram",
                 missing_platforms=missing,
                 terminal_recorder=terminal_recorder,
             )
@@ -492,6 +513,7 @@ def reconcile_publication_recovery(
                 target_at_utc=target_text,
                 now=now,
                 error=mismatch,
+                error_platform="telegram",
                 missing_platforms=missing,
                 terminal_recorder=terminal_recorder,
             )
@@ -513,6 +535,7 @@ def reconcile_publication_recovery(
                 code="UNKNOWN_PROVIDER_OUTCOME",
                 sanitized_detail="Площадка ещё не подтвердила публичное состояние.",
             ),
+            error_platform=missing[0] if len(missing) == 1 else None,
             missing_platforms=missing,
             terminal_recorder=terminal_recorder,
         )

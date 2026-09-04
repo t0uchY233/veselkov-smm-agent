@@ -24,6 +24,7 @@ from smm_agent.contracts.publication import (
     TelegramJobPayload,
 )
 from smm_agent.platform.ids import uuid7
+from smm_agent.platform.redaction import sanitize_recovery_error
 
 DEFAULT_LEASE_SECONDS = 60
 
@@ -172,6 +173,33 @@ class JobStore:
             connection.execute("RELEASE cancel_release_jobs")
             raise
         connection.execute("RELEASE cancel_release_jobs")
+
+    @staticmethod
+    def cancel_kind_jobs(
+        connection: sqlite3.Connection, *, release_id: str, kind: str, now: str
+    ) -> None:
+        """Close obsolete work without invoking any provider side effect."""
+
+        connection.execute(
+            """
+            UPDATE job_attempts
+            SET finished_at = ?, outcome = 'cancelled', detail = 'Задача устарела.'
+            WHERE attempt_id IN (
+                SELECT active_attempt_id FROM jobs
+                WHERE release_id = ? AND kind = ? AND state = 'running'
+            ) AND finished_at IS NULL
+            """,
+            (now, release_id, kind),
+        )
+        connection.execute(
+            """
+            UPDATE jobs
+            SET state = 'cancelled', lease_until = NULL, lease_owner_id = NULL,
+                active_attempt_id = NULL, updated_at = ?
+            WHERE release_id = ? AND kind = ? AND state IN ('queued', 'running', 'retry_wait')
+            """,
+            (now, release_id, kind),
+        )
 
     @staticmethod
     def rows(connection: sqlite3.Connection, release_id: str) -> list[sqlite3.Row]:
@@ -353,6 +381,24 @@ class JobStore:
         return True
 
     @staticmethod
+    def is_live_claim(
+        connection: sqlite3.Connection, *, claim: JobClaim, now: str
+    ) -> bool:
+        """Check the complete fence before a second table is mutated."""
+
+        return (
+            connection.execute(
+                """
+                SELECT 1 FROM jobs
+                WHERE job_id = ? AND state = 'running' AND active_attempt_id = ?
+                  AND lease_epoch = ? AND lease_until > ?
+                """,
+                (claim.job_id, claim.attempt_id, claim.lease_epoch, now),
+            ).fetchone()
+            is not None
+        )
+
+    @staticmethod
     def mark_succeeded(
         connection: sqlite3.Connection,
         *,
@@ -483,6 +529,7 @@ class JobStore:
         due_at: str | None = None,
         error: RecoveryError | None = None,
     ) -> bool:
+        persisted_error = sanitize_recovery_error(error) if error is not None else None
         assignments = [
             "state = ?",
             "lease_until = NULL",
@@ -494,7 +541,7 @@ class JobStore:
         if due_at is not None:
             assignments.append("due_at = ?")
             parameters.append(due_at)
-        if error is not None:
+        if persisted_error is not None:
             assignments.extend(
                 [
                     "last_error_code = ?",
@@ -502,7 +549,9 @@ class JobStore:
                     "last_error_at = ?",
                 ]
             )
-            parameters.extend([error.code, error.sanitized_detail, now])
+            parameters.extend(
+                [persisted_error.code, persisted_error.sanitized_detail, now]
+            )
         parameters.extend([claim.job_id, claim.attempt_id, claim.lease_epoch, now])
         connection.execute("SAVEPOINT finish_job")
         try:
@@ -519,9 +568,11 @@ class JobStore:
                 return False
             attempt_parameters: list[object] = [now, outcome]
             attempt_assignments = ["finished_at = ?", "outcome = ?"]
-            if error is not None:
+            if persisted_error is not None:
                 attempt_assignments.extend(["error_code = ?", "detail = ?"])
-                attempt_parameters.extend([error.code, error.sanitized_detail])
+                attempt_parameters.extend(
+                    [persisted_error.code, persisted_error.sanitized_detail]
+                )
             attempt_parameters.extend([claim.attempt_id, claim.job_id, claim.lease_epoch])
             attempt = connection.execute(
                 f"""
