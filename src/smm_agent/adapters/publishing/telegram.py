@@ -1,21 +1,21 @@
-"""Telegram Bot API adapter with a durable local task receipt.
+"""Telegram Bot API adapter with a fenced, durable local send intent.
 
-Telegram has no native scheduler. ``prepare`` and ``arm`` therefore persist a
-local task; the Windows scheduler invokes ``execute`` at target time. Every
-execute attempt asks Bot API for recent matching channel posts before sending,
-so a process crash after ``sendVideo`` can be reconciled without a duplicate.
+Telegram has neither a native publication scheduler nor a supported generic
+idempotency header.  The adapter therefore persists an intent before I/O and
+uses the Bot API update cursor to reconcile first.  If a process crashes after
+the intent, but before a receipt can prove the result, it returns an explicit
+``UNKNOWN_PROVIDER_OUTCOME`` rather than risk a duplicate channel post.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
-import os
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
+from urllib.parse import urlsplit
 
 from smm_agent.adapters.publishing.http import (
     HttpRequest,
@@ -37,8 +37,10 @@ from smm_agent.domain.publication.service import (
     PublicationInvariantFailed,
     validate_telegram_caption,
 )
+from smm_agent.platform.telegram_tasks import TelegramTaskConflict
 
 MAX_TELEGRAM_VIDEO_BYTES = 49_000_000
+_STREAM_CHUNK_SIZE = 1024 * 1024
 
 
 def telegram_request(
@@ -79,6 +81,11 @@ class TelegramTask:
     operation_key: str | None = None
     message_id: str | None = None
     public_at: str | None = None
+    lookup_cursor: int = 0
+    send_cursor: int | None = None
+    send_intent_at: str | None = None
+    confirmed_update_id: int | None = None
+    version: int = 0
 
     def target(self) -> datetime | None:
         return _parse_datetime(self.target_at_utc, provider="Telegram")
@@ -88,15 +95,23 @@ class TelegramTask:
 
 
 class TelegramTaskStore(Protocol):
-    """Durable local task receipt; it contains no Bot token or OAuth data."""
+    """Durable local task receipt with explicit transition fencing.
+
+    Production composition must bind :class:`SQLiteTelegramTaskStore`.  The
+    in-memory implementation below exists solely to keep unit tests isolated.
+    """
 
     def load(self, remote_id: str) -> TelegramTask | None: ...
 
-    def save(self, task: TelegramTask) -> None: ...
+    def create(self, task: TelegramTask) -> TelegramTask: ...
+
+    def compare_and_swap(
+        self, *, expected: TelegramTask, replacement: TelegramTask
+    ) -> TelegramTask: ...
 
 
 class InMemoryTelegramTaskStore:
-    """Test and single-process implementation of the durable-task port."""
+    """Test fake only; production uses SQLiteTelegramTaskStore."""
 
     def __init__(self) -> None:
         self._tasks: dict[str, TelegramTask] = {}
@@ -104,75 +119,21 @@ class InMemoryTelegramTaskStore:
     def load(self, remote_id: str) -> TelegramTask | None:
         return self._tasks.get(remote_id)
 
-    def save(self, task: TelegramTask) -> None:
+    def create(self, task: TelegramTask) -> TelegramTask:
+        if task.remote_id in self._tasks:
+            raise TelegramTaskConflict("Telegram task already exists.")
         self._tasks[task.remote_id] = task
+        return task
 
-
-class JsonTelegramTaskStore:
-    """Atomic JSON store used until the Windows composition root binds SQLite.
-
-    The file may be safely copied into a support bundle: it intentionally has
-    no credential, access token, raw provider response, or message body beyond
-    the already-approved release caption.
-    """
-
-    def __init__(self, path: Path) -> None:
-        self._path = path
-
-    def load(self, remote_id: str) -> TelegramTask | None:
-        raw = self._all().get(remote_id)
-        if raw is None:
-            return None
-        return _task_from_json(raw)
-
-    def save(self, task: TelegramTask) -> None:
-        values = self._all()
-        values[task.remote_id] = {
-            "remote_id": task.remote_id,
-            "idempotency_key": task.idempotency_key,
-            "payload_sha256": task.payload_sha256,
-            "video_path": task.video_path,
-            "video_sha256": task.video_sha256,
-            "video_size": task.video_size,
-            "caption": task.caption,
-            "state": task.state,
-            "target_at_utc": task.target_at_utc,
-            "operation_key": task.operation_key,
-            "message_id": task.message_id,
-            "public_at": task.public_at,
-        }
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._path.with_suffix(self._path.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-            encoding="utf-8",
-        )
-        os.replace(temporary, self._path)
-
-    def _all(self) -> dict[str, dict[str, object]]:
-        if not self._path.is_file():
-            return {}
-        try:
-            value = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ProviderOperationError(
-                code="INVALID_PAYLOAD",
-                sanitized_detail="Локальный Telegram task store повреждён.",
-            ) from exc
-        if not isinstance(value, dict):
-            raise ProviderOperationError(
-                code="INVALID_PAYLOAD",
-                sanitized_detail="Локальный Telegram task store имеет неверный формат.",
-            )
-        tasks: dict[str, dict[str, object]] = {}
-        for key, item in value.items():
-            if not isinstance(key, str) or not isinstance(item, dict):
-                raise ProviderOperationError(
-                    code="INVALID_PAYLOAD",
-                    sanitized_detail="Локальный Telegram task store имеет неверный формат.",
-                )
-            tasks[key] = {str(field): field_value for field, field_value in item.items()}
-        return tasks
+    def compare_and_swap(
+        self, *, expected: TelegramTask, replacement: TelegramTask
+    ) -> TelegramTask:
+        current = self._tasks.get(expected.remote_id)
+        if current is None or current.version != expected.version:
+            raise TelegramTaskConflict("Telegram task version fence lost.")
+        updated = replace(replacement, version=expected.version + 1)
+        self._tasks[expected.remote_id] = updated
+        return updated
 
 
 class TelegramPublisher:
@@ -185,16 +146,14 @@ class TelegramPublisher:
         *,
         transport: HttpTransport,
         chat_id: str,
-        bot_endpoint: str,
+        api_base: str,
         task_store: TelegramTaskStore,
     ) -> None:
         if not chat_id:
             raise ValueError("Для Telegram adapter нужен chat_id.")
-        if not bot_endpoint.startswith("https://"):
-            raise ValueError("Telegram Bot API endpoint должен использовать HTTPS.")
+        self._api_base = _safe_api_base(api_base)
         self._transport = transport
         self._chat_id = chat_id
-        self._bot_endpoint = bot_endpoint.rstrip("/")
         self._task_store = task_store
 
     def prepare(self, request: PublicationRequest) -> PreparedPublication:
@@ -229,8 +188,26 @@ class TelegramPublisher:
             caption=caption,
             state="prepared",
         )
-        self._task_store.save(task)
-        return self._prepared(task)
+        try:
+            created = self._task_store.create(task)
+        except TelegramTaskConflict:
+            concurrent = self._task_store.load(remote_id)
+            if concurrent is None:
+                raise self._error(
+                    "UNKNOWN_PROVIDER_OUTCOME", "Не удалось сохранить Telegram task."
+                ) from None
+            if (
+                concurrent.idempotency_key != request.idempotency_key
+                or concurrent.payload_sha256 != request.payload_sha256
+                or concurrent.video_sha256 != video_sha256
+                or concurrent.caption != caption
+            ):
+                raise self._error(
+                    "RECEIPT_MISMATCH",
+                    "Telegram task identity уже привязана к другому утверждённому payload.",
+                ) from None
+            created = concurrent
+        return self._prepared(created)
 
     def preflight(self, remote_id: str, *, payload_sha256: str) -> None:
         task = self._task(remote_id)
@@ -260,6 +237,11 @@ class TelegramPublisher:
             )
         if task.state == "cancelled":
             raise self._error("RECEIPT_MISMATCH", "Нельзя назначить отменённый Telegram task.")
+        if task.state == "sending":
+            raise self._error(
+                "UNKNOWN_PROVIDER_OUTCOME",
+                "Нельзя менять расписание Telegram task с начатой отправкой.",
+            )
         existing_target = task.target()
         if existing_target is not None and existing_target != target:
             raise self._error(
@@ -275,23 +257,33 @@ class TelegramPublisher:
             target_at_utc=_iso(target),
             operation_key=operation_key,
         )
-        self._task_store.save(armed)
-        return self._snapshot(armed)
+        return self._snapshot(self._replace(task, armed))
 
     def status(self, remote_id: str, *, now: datetime | None = None) -> PublicationSnapshot:
         del now
         task = self._task(remote_id)
         if task.state in {"prepared", "public", "cancelled"}:
             return self._snapshot(task)
-        looked_up = self._lookup_recent_message(task)
+        try:
+            lookup = self._lookup_recent_message(task)
+        except ProviderOperationError:
+            if task.state == "sending":
+                raise self._error(
+                    "UNKNOWN_PROVIDER_OUTCOME",
+                    "Невозможно подтвердить результат уже начатой Telegram отправки.",
+                ) from None
+            raise
+        task = self._persist_lookup_cursor(task, lookup.next_cursor)
+        looked_up = lookup.receipt if task.state == "sending" else None
         if looked_up is not None:
             task = replace(
                 task,
                 state="public",
                 message_id=looked_up[0],
                 public_at=_iso(looked_up[1]),
+                confirmed_update_id=looked_up[2],
             )
-            self._task_store.save(task)
+            task = self._replace(self._task(remote_id), task)
         return self._snapshot(task)
 
     def cancel(self, remote_id: str, *, operation_key: str) -> PublicationSnapshot:
@@ -303,9 +295,9 @@ class TelegramPublisher:
                 "RECEIPT_MISMATCH",
                 "Telegram post с начатой или публичной отправкой нельзя автоматически отменить.",
             )
+        task = self._task(remote_id)
         cancelled = replace(task, state="cancelled")
-        self._task_store.save(cancelled)
-        return self._snapshot(cancelled)
+        return self._snapshot(self._replace(task, cancelled))
 
     def execute(self, remote_id: str, *, operation_key: str, now: datetime) -> PublicationSnapshot:
         task = self._task(remote_id)
@@ -325,20 +317,48 @@ class TelegramPublisher:
             raise self._error("INVALID_PAYLOAD", "Telegram task запущена раньше target времени.")
         task = self._task(remote_id)
         self._verify_video(task)
-        sending = replace(task, state="sending")
-        self._task_store.save(sending)
-        response = self._send(
-            self._multipart_request(sending), provider="Telegram", accepted_statuses={200}
+        # The intent is the irreversible boundary: a crash anywhere after its
+        # fenced save is *never* retried as sendVideo.  Status reconciliation
+        # either proves a message or raises UNKNOWN_PROVIDER_OUTCOME for an
+        # incident/human decision.
+        sending = self._replace(
+            task,
+            replace(
+                task,
+                state="sending",
+                send_cursor=task.lookup_cursor,
+                send_intent_at=_iso(now.astimezone(UTC)),
+            ),
         )
-        message_id, published_at = self._message_receipt(response, task=sending)
+        try:
+            response = self._send(
+                self._multipart_request(sending), provider="Telegram", accepted_statuses={200}
+            )
+            message_id, published_at = self._message_receipt(response, task=sending)
+        except ProviderOperationError:
+            raise self._error(
+                "UNKNOWN_PROVIDER_OUTCOME",
+                "Telegram sendVideo начат; его результат требует status-first reconciliation.",
+            ) from None
         published = replace(
             sending,
             state="public",
             message_id=message_id,
             public_at=_iso(published_at),
+            # A direct Bot API receipt has a stronger response identity than
+            # a later update.  ``0`` explicitly records that fact in SQLite.
+            confirmed_update_id=0,
         )
-        self._task_store.save(published)
-        return self._snapshot(published)
+        try:
+            return self._snapshot(self._replace(sending, published))
+        except TelegramTaskConflict:
+            current_after_send = self._task(remote_id)
+            if current_after_send.state == "public":
+                return self._snapshot(current_after_send)
+            raise self._error(
+                "UNKNOWN_PROVIDER_OUTCOME",
+                "Telegram sendVideo завершился, но local receipt потерял fence.",
+            ) from None
 
     def _prepare_input(self, request: PublicationRequest) -> tuple[Path, str, int, str]:
         video = self._object(request.payload, "video", provider="Telegram")
@@ -358,7 +378,7 @@ class TelegramPublisher:
         path = Path(path_value)
         if not path.is_file():
             raise self._error("INVALID_PAYLOAD", "Telegram video artifact отсутствует.")
-        actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        actual_hash = _sha256_file(path)
         if actual_hash != hash_value:
             raise self._error(
                 "INVALID_PAYLOAD", "Telegram video artifact изменился после утверждения."
@@ -376,7 +396,7 @@ class TelegramPublisher:
             raise self._error(
                 "INVALID_PAYLOAD", "Telegram video artifact отсутствует или изменился."
             )
-        if hashlib.sha256(path.read_bytes()).hexdigest() != task.video_sha256:
+        if _sha256_file(path) != task.video_sha256:
             raise self._error(
                 "INVALID_PAYLOAD", "Telegram video artifact изменился после утверждения."
             )
@@ -389,27 +409,44 @@ class TelegramPublisher:
         except PublicationInvariantFailed as exc:
             raise self._error("INVALID_PAYLOAD", "Telegram caption не прошла проверку.") from exc
 
-    def _lookup_recent_message(self, task: TelegramTask) -> tuple[str, datetime] | None:
-        """Read recent ``channel_post`` updates before every possible send.
+    def _lookup_recent_message(self, task: TelegramTask) -> _TelegramLookup:
+        """Read updates from the durable cursor before every possible send.
 
-        Bot API keeps updates only for a limited period. If the transport cannot
-        prove a prior send from those updates, the caller gets a typed unknown
-        outcome and recovery retries status first instead of manufacturing a
-        second message.
+        A matching caption alone is not a receipt: it could be a manually
+        posted lookalike.  A recovery candidate must be newer than the cursor
+        snapshotted with the send intent and is persisted as the composite
+        ``(update_id, chat_id, message_id)`` identity.  Older same-caption
+        posts only advance the cursor and can never become this task's receipt.
         """
 
         response = self._send_json(
             method="POST",
             method_name="getUpdates",
-            value={"allowed_updates": ["channel_post"], "limit": 100, "timeout": 0},
+            value={
+                "allowed_updates": ["channel_post"],
+                "limit": 100,
+                "timeout": 0,
+                "offset": task.lookup_cursor,
+            },
             idempotency_key=f"lookup:{task.idempotency_key}",
         )
         updates = response.get("result")
         if not isinstance(updates, list):
             raise self._error("RECEIPT_MISMATCH", "Telegram getUpdates вернул неверный result.")
+        next_cursor = task.lookup_cursor
         target = task.target()
+        sent_at = _parse_datetime(task.send_intent_at, provider="Telegram")
+        minimum_update_id = task.send_cursor if task.send_cursor is not None else None
         for update in updates:
             if not isinstance(update, Mapping):
+                continue
+            update_id = update.get("update_id")
+            if not isinstance(update_id, int) or update_id < 0:
+                continue
+            next_cursor = max(next_cursor, update_id + 1)
+            if task.state != "sending" or minimum_update_id is None:
+                continue
+            if update_id < minimum_update_id:
                 continue
             post = update.get("channel_post")
             if not isinstance(post, Mapping):
@@ -425,11 +462,15 @@ class TelegramPublisher:
             date = _telegram_timestamp(post.get("date"), provider="Telegram")
             if target is not None and date < target:
                 continue
+            if sent_at is None or date < sent_at:
+                continue
             message_id = post.get("message_id")
             if not isinstance(message_id, int) or message_id < 1:
                 continue
-            return str(message_id), date
-        return None
+            return _TelegramLookup(
+                receipt=(str(message_id), date, update_id), next_cursor=next_cursor
+            )
+        return _TelegramLookup(receipt=None, next_cursor=next_cursor)
 
     def _multipart_request(self, task: TelegramTask) -> HttpRequest:
         video_path = Path(task.video_path)
@@ -439,9 +480,9 @@ class TelegramPublisher:
             ("caption", task.caption),
             ("supports_streaming", "true"),
         ]
-        chunks: list[bytes] = []
+        prefix_chunks: list[bytes] = []
         for key, value in fields:
-            chunks.extend(
+            prefix_chunks.extend(
                 [
                     f"--{boundary}\r\n".encode(),
                     f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode(),
@@ -449,7 +490,11 @@ class TelegramPublisher:
                     b"\r\n",
                 ]
             )
-        chunks.extend(
+        suffix_chunks = (
+            b"\r\n",
+            f"--{boundary}--\r\n".encode(),
+        )
+        prefix_chunks.extend(
             [
                 f"--{boundary}\r\n".encode(),
                 (
@@ -457,21 +502,23 @@ class TelegramPublisher:
                     f'filename="{video_path.name}"\r\n'
                 ).encode(),
                 b"Content-Type: video/mp4\r\n\r\n",
-                video_path.read_bytes(),
-                b"\r\n",
-                f"--{boundary}--\r\n".encode(),
             ]
         )
-        body = b"".join(chunks)
+        stream = _MultipartVideoStream(
+            prefix=tuple(prefix_chunks),
+            suffix=suffix_chunks,
+            video_path=video_path,
+            video_size=task.video_size,
+            video_sha256=task.video_sha256,
+        )
         return HttpRequest(
             method="POST",
-            url=f"{self._bot_endpoint}/sendVideo",
+            url=self._method_url("sendVideo"),
             headers={
                 "Content-Type": f"multipart/form-data; boundary={boundary}",
-                "Content-Length": str(len(body)),
-                "X-Idempotency-Key": task.idempotency_key,
+                "Content-Length": str(stream.content_length),
             },
-            body=body,
+            body_stream=stream,
             idempotency_key=task.idempotency_key,
         )
 
@@ -505,7 +552,7 @@ class TelegramPublisher:
         response = self._send(
             HttpRequest(
                 method=method,
-                url=f"{self._bot_endpoint}/{method_name}",
+                url=self._method_url(method_name),
                 headers={"Content-Type": "application/json; charset=utf-8"},
                 body=body,
                 idempotency_key=idempotency_key,
@@ -514,6 +561,32 @@ class TelegramPublisher:
             accepted_statuses={200},
         )
         return self._json(response)
+
+    def _method_url(self, method_name: str) -> str:
+        # Credential-aware transport inserts Bot token material only at the I/O
+        # edge.  This URL is intentionally safe to retain in diagnostics.
+        return f"{self._api_base}/bot/{method_name}"
+
+    def _persist_lookup_cursor(self, task: TelegramTask, cursor: int) -> TelegramTask:
+        if cursor < task.lookup_cursor:
+            raise self._error("RECEIPT_MISMATCH", "Telegram update cursor откатился.")
+        if cursor == task.lookup_cursor:
+            return task
+        try:
+            return self._replace(task, replace(task, lookup_cursor=cursor))
+        except TelegramTaskConflict:
+            current = self._task(task.remote_id)
+            if current.lookup_cursor >= cursor:
+                return current
+            raise self._error(
+                "UNKNOWN_PROVIDER_OUTCOME", "Потеряна версия Telegram update cursor."
+            ) from None
+
+    def _replace(self, expected: TelegramTask, replacement: TelegramTask) -> TelegramTask:
+        try:
+            return self._task_store.compare_and_swap(expected=expected, replacement=replacement)
+        except TelegramTaskConflict:
+            raise
 
     def _send(
         self,
@@ -613,6 +686,87 @@ class TelegramPublisher:
         return ProviderOperationError(code=code, sanitized_detail=sanitized_detail)
 
 
+@dataclass(frozen=True, slots=True)
+class _TelegramLookup:
+    """A cursor advance plus an optional composite remote receipt."""
+
+    receipt: tuple[str, datetime, int] | None
+    next_cursor: int
+
+
+@dataclass(frozen=True, slots=True)
+class _MultipartVideoStream:
+    """Multipart file body that never materialises the 49 MB video in RAM."""
+
+    prefix: tuple[bytes, ...]
+    suffix: tuple[bytes, ...]
+    video_path: Path
+    video_size: int
+    video_sha256: str
+
+    @property
+    def content_length(self) -> int:
+        return (
+            sum(len(chunk) for chunk in self.prefix)
+            + self.video_size
+            + sum(len(chunk) for chunk in self.suffix)
+        )
+
+    def iter_chunks(self) -> Iterator[bytes]:
+        yield from self.prefix
+        read_size = 0
+        digest = hashlib.sha256()
+        with self.video_path.open("rb") as stream:
+            while chunk := stream.read(_STREAM_CHUNK_SIZE):
+                read_size += len(chunk)
+                digest.update(chunk)
+                yield chunk
+        if read_size != self.video_size:
+            raise ProviderOperationError(
+                code="INVALID_PAYLOAD",
+                sanitized_detail="Telegram video изменился во время streaming upload.",
+            )
+        if digest.hexdigest() != self.video_sha256:
+            raise ProviderOperationError(
+                code="INVALID_PAYLOAD",
+                sanitized_detail="Telegram video изменился во время streaming upload.",
+            )
+        yield from self.suffix
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(_STREAM_CHUNK_SIZE):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _safe_api_base(value: str) -> str:
+    """Accept only a credential-free HTTPS Bot API origin/path.
+
+    A standard Bot token is injected by ``RedactingHttpsTransport`` after the
+    adapter has finished building this safe request.  Rejecting user info,
+    queries, fragments, and a token-bearing ``/bot<token>`` path prevents a
+    configuration mistake from reaching request reprs or diagnostics.
+    """
+
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Telegram api_base должен быть credential-free HTTPS URL.")
+    parts = [part for part in parsed.path.split("/") if part]
+    if any(part.lower().startswith("bot") and len(part) > 3 for part in parts):
+        raise ValueError("Telegram api_base не должен содержать Bot token.")
+    return value.rstrip("/")
+
+
 def _as_utc(value: datetime, *, provider: str) -> datetime:
     if value.tzinfo is None:
         raise ProviderOperationError(
@@ -649,52 +803,3 @@ def _telegram_timestamp(value: object, *, provider: str) -> datetime:
             code="RECEIPT_MISMATCH", sanitized_detail=f"{provider} не вернул timestamp сообщения."
         )
     return datetime.fromtimestamp(value, tz=UTC)
-
-
-def _task_from_json(value: Mapping[str, object]) -> TelegramTask:
-    required = (
-        "remote_id",
-        "idempotency_key",
-        "payload_sha256",
-        "video_path",
-        "video_sha256",
-        "caption",
-        "state",
-    )
-    if any(not isinstance(value.get(field), str) or not value[field] for field in required):
-        raise ProviderOperationError(
-            code="INVALID_PAYLOAD",
-            sanitized_detail="Локальный Telegram task store содержит неполный task.",
-        )
-    video_size = value.get("video_size")
-    if not isinstance(video_size, int) or video_size <= 0:
-        raise ProviderOperationError(
-            code="INVALID_PAYLOAD",
-            sanitized_detail="Локальный Telegram task store содержит неверный video size.",
-        )
-    optional = ("target_at_utc", "operation_key", "message_id", "public_at")
-    if any(
-        value.get(field) is not None and not isinstance(value.get(field), str) for field in optional
-    ):
-        raise ProviderOperationError(
-            code="INVALID_PAYLOAD",
-            sanitized_detail="Локальный Telegram task store содержит неверный optional receipt.",
-        )
-    target_at_utc = value.get("target_at_utc")
-    operation_key = value.get("operation_key")
-    message_id = value.get("message_id")
-    public_at = value.get("public_at")
-    return TelegramTask(
-        remote_id=str(value["remote_id"]),
-        idempotency_key=str(value["idempotency_key"]),
-        payload_sha256=str(value["payload_sha256"]),
-        video_path=str(value["video_path"]),
-        video_sha256=str(value["video_sha256"]),
-        video_size=video_size,
-        caption=str(value["caption"]),
-        state=str(value["state"]),
-        target_at_utc=target_at_utc if isinstance(target_at_utc, str) else None,
-        operation_key=operation_key if isinstance(operation_key, str) else None,
-        message_id=message_id if isinstance(message_id, str) else None,
-        public_at=public_at if isinstance(public_at, str) else None,
-    )

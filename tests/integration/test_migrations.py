@@ -38,7 +38,7 @@ def test_existing_slice_one_database_upgrades_to_current_schema(tmp_path: Path) 
             for row in upgraded.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
 
-    assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6]
+    assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6, 7]
     assert "revision_target" in release_columns
     assert "recording_watch_initialized_at" in release_columns
     assert {
@@ -58,6 +58,7 @@ def test_existing_slice_one_database_upgrades_to_current_schema(tmp_path: Path) 
         "incidents",
         "notifications",
         "notification_attempts",
+        "telegram_tasks",
     } <= tables
 
 
@@ -254,13 +255,16 @@ def test_existing_slice_five_notification_job_gets_release_identity(tmp_path: Pa
     connection = sqlite3.connect(database.path)
     try:
         for version in range(1, 6):
-            name = f"{version:04d}_" + {
-                1: "initial.sql",
-                2: "editorial.sql",
-                3: "video.sql",
-                4: "publication.sql",
-                5: "recovery.sql",
-            }[version]
+            name = (
+                f"{version:04d}_"
+                + {
+                    1: "initial.sql",
+                    2: "editorial.sql",
+                    3: "video.sql",
+                    4: "publication.sql",
+                    5: "recovery.sql",
+                }[version]
+            )
             connection.executescript((migrations / name).read_text(encoding="utf-8"))
             connection.execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
@@ -285,9 +289,7 @@ def test_existing_slice_five_notification_job_gets_release_identity(tmp_path: Pa
             (
                 "2026-09-04T00:00:00Z",
                 '{"incident_id":"incident","notification_id":"notification",'
-                '"recipient":"276042853","request_sha256":"'
-                + "a" * 64
-                + '"}',
+                '"recipient":"276042853","request_sha256":"' + "a" * 64 + '"}',
                 "2026-09-04T00:00:00Z",
                 "2026-09-04T00:00:00Z",
             ),
