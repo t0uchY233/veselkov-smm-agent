@@ -1,0 +1,46 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sections": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 12,
+      "minItems": 3,
+      "title": "Sections",
+      "type": "array"
+    },
+    "target_duration_minutes": {
+      "maximum": 10,
+      "minimum": 5,
+      "title": "Target Duration Minutes",
+      "type": "number"
+    },
+    "thesis": {
+      "maxLength": 500,
+      "minLength": 10,
+      "title": "Thesis",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 180,
+      "minLength": 5,
+      "title": "Title",
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "thesis",
+    "sections",
+    "target_duration_minutes"
+  ],
+  "title": "PlanDocument",
+  "type": "object"
+}

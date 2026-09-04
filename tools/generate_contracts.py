@@ -4,10 +4,13 @@ import json
 from pathlib import Path
 
 from smm_agent.contracts.cli import ErrorResponse, ReleaseResult
+from smm_agent.contracts.editorial import EditorialBundle, PlanDocument
 
 SCHEMAS = {
     "cli-error.v1.json": ErrorResponse.model_json_schema(by_alias=True),
     "release-result.v1.json": ReleaseResult.model_json_schema(by_alias=True),
+    "editorial-bundle.v1.json": EditorialBundle.model_json_schema(),
+    "plan-document.v1.json": PlanDocument.model_json_schema(),
 }
 
 

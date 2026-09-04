@@ -9,7 +9,9 @@ description = "Windows-native orchestrator for Sergey Veselkov's SMM workflow"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+  "pillow>=11,<13",
   "pydantic>=2.11,<3",
+  "python-docx>=1.2,<2",
   "typer>=0.16,<1",
 ]
 
@@ -25,6 +27,9 @@ smmctl = "smm_agent.cli.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/smm_agent"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"migrations" = "smm_agent/migrations"
 
 [tool.pytest.ini_options]
 addopts = "-q"

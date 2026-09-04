@@ -141,6 +141,6 @@ owner: Sardor
 
 ## Текущий build loop
 
-Slice 1 реализован и проверен; evidence сохранён в `evidence/slice-01.md`.
-Следующий срез: Slice 2. Перед его завершением выполняются последовательный
+Slices 1 и 2 реализованы и проверены; evidence сохранён в `evidence/`.
+Следующий срез: Slice 3. Перед его завершением выполняются последовательный
 guarded test run, свежий review и исправление critical/high findings.

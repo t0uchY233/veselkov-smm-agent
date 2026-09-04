@@ -29,4 +29,5 @@ class ReleaseResult(StrictContract):
     state: str
     topic: str
     next_action: str
-
+    pending_gate: str | None = None
+    artifacts: dict[str, str] = Field(default_factory=dict)

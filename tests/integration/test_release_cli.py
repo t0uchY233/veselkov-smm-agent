@@ -146,3 +146,13 @@ def test_start_rejects_nonzero_expected_revision(tmp_path: Path) -> None:
 
     assert conflict.returncode == 2
     assert json.loads(conflict.stdout)["error"]["code"] == "STATE_CONFLICT"
+
+
+def test_invalid_cli_usage_still_returns_one_json_document(tmp_path: Path) -> None:
+    project_root = Path(__file__).parents[2]
+
+    result = run_cli(project_root, tmp_path / "data", "release", "unknown-command")
+
+    assert result.returncode == 2
+    assert result.stderr == ""
+    assert json.loads(result.stdout)["error"]["code"] == "VALIDATION_FAILED"

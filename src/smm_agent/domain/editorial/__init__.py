@@ -1,0 +1,2 @@
+"""Editorial domain ports."""
+

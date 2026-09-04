@@ -5,9 +5,6 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO schema_migrations(version, applied_at)
-VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
-
 CREATE TABLE IF NOT EXISTS releases (
     release_id TEXT PRIMARY KEY,
     topic TEXT NOT NULL CHECK (length(trim(topic)) > 0),

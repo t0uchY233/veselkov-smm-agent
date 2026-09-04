@@ -1,9 +1,28 @@
 {
   "additionalProperties": false,
   "properties": {
+    "artifacts": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Artifacts",
+      "type": "object"
+    },
     "next_action": {
       "title": "Next Action",
       "type": "string"
+    },
+    "pending_gate": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pending Gate"
     },
     "release_id": {
       "title": "Release Id",
