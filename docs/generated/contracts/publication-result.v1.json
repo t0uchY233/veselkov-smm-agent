@@ -1,0 +1,160 @@
+{
+  "$defs": {
+    "PublicationSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "known_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Known Url"
+        },
+        "payload_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Payload Sha256",
+          "type": "string"
+        },
+        "platform": {
+          "enum": [
+            "youtube",
+            "dzen",
+            "telegram"
+          ],
+          "title": "Platform",
+          "type": "string"
+        },
+        "public_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Public At"
+        },
+        "remote_id": {
+          "minLength": 1,
+          "title": "Remote Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "absent",
+            "preparing",
+            "prepared",
+            "armed",
+            "publishing",
+            "public",
+            "retry_wait",
+            "failed",
+            "cancelled"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "target_at_utc": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target At Utc"
+        }
+      },
+      "required": [
+        "platform",
+        "state",
+        "remote_id",
+        "payload_sha256"
+      ],
+      "title": "PublicationSnapshot",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "next_action": {
+      "title": "Next Action",
+      "type": "string"
+    },
+    "publications": {
+      "additionalProperties": {
+        "$ref": "#/$defs/PublicationSnapshot"
+      },
+      "propertyNames": {
+        "enum": [
+          "youtube",
+          "dzen",
+          "telegram"
+        ]
+      },
+      "title": "Publications",
+      "type": "object"
+    },
+    "release_id": {
+      "title": "Release Id",
+      "type": "string"
+    },
+    "revision": {
+      "title": "Revision",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "state": {
+      "title": "State",
+      "type": "string"
+    },
+    "target_at_utc": {
+      "title": "Target At Utc",
+      "type": "string"
+    },
+    "telegram_caption_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Telegram Caption Path"
+    }
+  },
+  "required": [
+    "release_id",
+    "revision",
+    "state",
+    "target_at_utc",
+    "publications",
+    "next_action"
+  ],
+  "title": "PublicationResult",
+  "type": "object"
+}

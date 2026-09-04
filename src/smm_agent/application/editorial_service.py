@@ -4,7 +4,7 @@ import json
 import mimetypes
 import sqlite3
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -32,6 +32,7 @@ from smm_agent.application.release_service import (
 from smm_agent.contracts.cli import ReleaseResult
 from smm_agent.contracts.editorial import EditorialBundle, PlanDocument
 from smm_agent.domain.editorial.ports import DocxBuilder, ImageInspector
+from smm_agent.domain.publication.service import validate_future_target
 from smm_agent.domain.release.model import Release, ReleaseState
 from smm_agent.platform.db import Database
 from smm_agent.platform.ids import uuid7
@@ -60,8 +61,8 @@ def set_publication_target(
     if parsed.tzinfo is None:
         raise ValueError("Время публикации должно содержать часовой пояс.")
     target_utc = parsed.astimezone(UTC)
-    if target_utc <= datetime.now(UTC):
-        raise ValueError("Время публикации должно быть в будущем.")
+    if target_utc - datetime.now(UTC) < timedelta(minutes=35):
+        raise ValueError("До времени публикации должно оставаться не менее 35 минут.")
     target_value = target_utc.isoformat().replace("+00:00", "Z")
     request_hash = canonical_hash(
         {
@@ -545,6 +546,13 @@ def decide_gate(
         if decision == "approved":
             if gate == "final" and release.target_at_utc is None:
                 raise StateConflict("До финального утверждения задайте время публикации.")
+            if gate == "final" and release.target_at_utc is not None:
+                validate_future_target(
+                    datetime.fromisoformat(
+                        release.target_at_utc.replace("Z", "+00:00")
+                    ),
+                    datetime.now(UTC),
+                )
             final_records = database.latest_artifact_records(connection, release.release_id)
             approved_records = database.approval_artifact_records(
                 connection, str(approval["approval_id"])

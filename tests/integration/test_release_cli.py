@@ -3,7 +3,18 @@ import os
 import sqlite3
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
+
+from smm_agent.application.release_service import next_default_target
+
+
+def test_default_target_is_nearest_future_thursday_at_1400_moscow() -> None:
+    before = next_default_target(datetime(2026, 9, 3, 10, 0, tzinfo=UTC))
+    after = next_default_target(datetime(2026, 9, 3, 12, 0, tzinfo=UTC))
+
+    assert before == "2026-09-03T11:00:00Z"
+    assert after == "2026-09-10T11:00:00Z"
 
 
 def run_cli(project_root: Path, data_root: Path, *args: str) -> subprocess.CompletedProcess[str]:

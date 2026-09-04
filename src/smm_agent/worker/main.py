@@ -9,9 +9,11 @@ from pathlib import Path
 
 from smm_agent.adapters.media.ffmpeg import FFmpegMediaTool
 from smm_agent.adapters.media.offline_asr import OfflineJsonRecognizer
+from smm_agent.adapters.publishing.replay import ReplayPublisher
 from smm_agent.application.setup_service import require_accepted_media_profile
 from smm_agent.contracts.video import AlignmentProfile
 from smm_agent.platform.db import Database
+from smm_agent.worker.publication_worker import PublicationTick, PublicationWorker
 from smm_agent.worker.video_worker import VideoWorker, WorkerTick
 
 
@@ -27,6 +29,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--ffprobe", default="ffprobe")
     parser.add_argument("--poll-seconds", default=5, type=float)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument(
+        "--publication-replay",
+        action="store_true",
+        help="Run publication coordination with non-network replay adapters.",
+    )
     return parser
 
 
@@ -75,6 +82,16 @@ def _tick_payload(tick: WorkerTick) -> dict[str, object]:
     }
 
 
+def _publication_tick_payload(tick: PublicationTick) -> dict[str, object]:
+    return {
+        "schema_version": "1.0",
+        "outcome": tick.outcome,
+        "publication": (
+            tick.publication.model_dump(mode="json") if tick.publication else None
+        ),
+    }
+
+
 def main() -> None:
     args = _parser().parse_args()
     database = Database(args.data_root.resolve())
@@ -107,11 +124,38 @@ def main() -> None:
         ),
         stable_seconds=30,
     )
+    publication_worker = (
+        PublicationWorker(
+            database=database,
+            publishers={
+                "youtube": ReplayPublisher(
+                    "youtube", state_path=database.data_root / "state/replay-youtube.json"
+                ),
+                "dzen": ReplayPublisher(
+                    "dzen", state_path=database.data_root / "state/replay-dzen.json"
+                ),
+                "telegram": ReplayPublisher(
+                    "telegram",
+                    state_path=database.data_root / "state/replay-telegram.json",
+                ),
+            },
+        )
+        if args.publication_replay
+        else None
+    )
+
+    def run_once() -> dict[str, object]:
+        if publication_worker is not None:
+            publication_tick = publication_worker.run_once()
+            if publication_tick.outcome != "idle":
+                return _publication_tick_payload(publication_tick)
+        return _tick_payload(worker.run_once())
+
     if args.once:
-        print(json.dumps(_tick_payload(worker.run_once()), ensure_ascii=False))
+        print(json.dumps(run_once(), ensure_ascii=False))
         return
     while True:
-        worker.run_once()
+        run_once()
         time.sleep(args.poll_seconds)
 
 

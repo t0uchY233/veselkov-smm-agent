@@ -32,4 +32,5 @@ class ReleaseResult(StrictContract):
     pending_gate: str | None = None
     target_at_utc: str | None = None
     target_timezone: str = "Europe/Moscow"
+    publication_states: dict[str, str] = Field(default_factory=dict)
     artifacts: dict[str, str] = Field(default_factory=dict)

@@ -4,7 +4,7 @@ status: active
 spec: spec.md
 spec_version: 0.2.1
 created: 2026-09-03
-updated: 2026-09-03
+updated: 2026-09-04
 owner: Sardor
 ---
 
@@ -79,7 +79,7 @@ owner: Sardor
 - **Out of scope:** реальные публикации.
 - **Blocked by:** Slice 2.
 
-### Slice 4: Площадки готовят один согласованный отложенный Выпуск
+### Slice 4: Площадки готовят один согласованный отложенный Выпуск — реализован
 
 - **Delivers:** ports и replay adapters доказывают prepare/arm/status/cancel;
   Telegram payload создаётся только после получения ссылок YouTube и Дзена.
@@ -141,6 +141,7 @@ owner: Sardor
 
 ## Текущий build loop
 
-Slices 1–3 реализованы и проверены; evidence сохранён в `evidence/`.
-Следующий срез: Slice 4. Перед его завершением выполняются последовательный
-guarded test run, свежий review и исправление critical/high findings.
+Slices 1–4 реализованы и проверены; evidence сохранён в `evidence/`.
+Следующий срез: Slice 5. Перед его завершением выполняются последовательный
+guarded test run, свежий независимый review и исправление critical/high findings
+в границах принятого среза.

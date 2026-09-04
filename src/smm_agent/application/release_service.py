@@ -2,12 +2,15 @@
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from smm_agent.contracts.cli import ReleaseResult
 from smm_agent.domain.release import Release, ReleaseConflict, start_release
 from smm_agent.platform.db import Database
 from smm_agent.platform.ids import uuid7
+from smm_agent.platform.publications import PublicationStore
 
 
 class IdempotencyConflict(Exception):
@@ -20,6 +23,19 @@ class StateConflict(Exception):
 
 class ReleaseNotFound(Exception):
     """No requested or active release exists."""
+
+
+def next_default_target(now: datetime) -> str:
+    if now.tzinfo is None:
+        raise ValueError("now must include timezone")
+    moscow = ZoneInfo("Europe/Moscow")
+    local = now.astimezone(moscow)
+    days_until_thursday = (3 - local.weekday()) % 7
+    candidate_date = local.date() + timedelta(days=days_until_thursday)
+    candidate = datetime.combine(candidate_date, time(14, 0), tzinfo=moscow)
+    if candidate <= local:
+        candidate += timedelta(days=7)
+    return candidate.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def create_release(
@@ -57,6 +73,12 @@ def create_release(
             raise ReleaseConflict(active.release_id)
 
         release = start_release(release_id=uuid7(), topic=topic)
+        release = replace(
+            release,
+            target_at_utc=next_default_target(
+                datetime.fromisoformat(release.created_at.replace("Z", "+00:00"))
+            ),
+        )
         database.insert_release(connection, release, actor=actor)
         result = release_result(release)
         database.save_command(
@@ -82,10 +104,15 @@ def get_release_status(database: Database, release_id: str | None = None) -> Rel
             raise ReleaseNotFound(release_id or "active")
         approval = database.pending_approval(connection, release.release_id)
         artifacts = database.latest_artifact_paths(connection, release.release_id)
+        publication_states = {
+            str(row["platform"]): str(row["state"])
+            for row in PublicationStore.rows(connection, release.release_id)
+        }
     return release_result(
         release,
         pending_gate=str(approval["gate"]) if approval else None,
         artifacts=artifacts,
+        publication_states=publication_states,
     )
 
 
@@ -94,6 +121,7 @@ def release_result(
     *,
     pending_gate: str | None = None,
     artifacts: dict[str, str] | None = None,
+    publication_states: dict[str, str] | None = None,
 ) -> ReleaseResult:
     return ReleaseResult(
         release_id=release.release_id,
@@ -104,6 +132,7 @@ def release_result(
         pending_gate=pending_gate,
         target_at_utc=release.target_at_utc,
         target_timezone=release.target_timezone,
+        publication_states=publication_states or {},
         artifacts=artifacts or {},
     )
 

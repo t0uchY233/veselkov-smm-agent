@@ -3,6 +3,7 @@ from pathlib import Path
 
 from smm_agent.contracts.cli import ErrorResponse, ReleaseResult
 from smm_agent.contracts.editorial import EditorialBundle, PlanDocument
+from smm_agent.contracts.publication import PublicationRequest, PublicationResult
 from smm_agent.contracts.video import AlignmentProfile, AlignmentResult, Transcript, VideoQc
 
 
@@ -17,6 +18,8 @@ def test_checked_in_contract_schemas_match_models() -> None:
         "video-alignment.v1.json": AlignmentResult.model_json_schema(),
         "video-qc.v1.json": VideoQc.model_json_schema(),
         "video-alignment-profile.v1.json": AlignmentProfile.model_json_schema(),
+        "publication-request.v1.json": PublicationRequest.model_json_schema(),
+        "publication-result.v1.json": PublicationResult.model_json_schema(),
     }
 
     for filename, schema in expected.items():

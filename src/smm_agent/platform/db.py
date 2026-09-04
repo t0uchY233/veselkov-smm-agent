@@ -106,14 +106,17 @@ class Database:
         connection.execute(
             """
             INSERT INTO releases (
-                release_id, topic, state, revision, active, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                release_id, topic, state, revision, target_at_utc, target_timezone,
+                active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 release.release_id,
                 release.topic,
                 release.state,
                 release.revision,
+                release.target_at_utc,
+                release.target_timezone,
                 int(release.active),
                 release.created_at,
                 release.updated_at,
@@ -184,6 +187,27 @@ class Database:
         return expected_revision + 1
 
     @staticmethod
+    def complete_release(
+        connection: sqlite3.Connection,
+        *,
+        release_id: str,
+        expected_revision: int,
+        updated_at: str,
+    ) -> int:
+        cursor = connection.execute(
+            """
+            UPDATE releases
+            SET state = 'published', active = 0, revision = revision + 1,
+                updated_at = ?
+            WHERE release_id = ? AND revision = ? AND state = 'scheduled'
+            """,
+            (updated_at, release_id, expected_revision),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError("stale release revision")
+        return expected_revision + 1
+
+    @staticmethod
     def set_release_target(
         connection: sqlite3.Connection,
         *,
@@ -199,6 +223,35 @@ class Database:
             SET target_at_utc = ?, target_timezone = ?, revision = revision + 1,
                 updated_at = ?
             WHERE release_id = ? AND revision = ? AND state = 'final_pending'
+            """,
+            (
+                target_at_utc,
+                target_timezone,
+                updated_at,
+                release_id,
+                expected_revision,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError("stale release revision")
+        return expected_revision + 1
+
+    @staticmethod
+    def reschedule_release(
+        connection: sqlite3.Connection,
+        *,
+        release_id: str,
+        expected_revision: int,
+        target_at_utc: str,
+        target_timezone: str,
+        updated_at: str,
+    ) -> int:
+        cursor = connection.execute(
+            """
+            UPDATE releases
+            SET target_at_utc = ?, target_timezone = ?, state = 'publication_preparing',
+                revision = revision + 1, updated_at = ?
+            WHERE release_id = ? AND revision = ? AND state IN ('scheduled', 'delayed')
             """,
             (
                 target_at_utc,
@@ -346,6 +399,26 @@ class Database:
             connection.execute(
                 "SELECT * FROM approvals WHERE release_id = ? AND decision = 'pending'",
                 (release_id,),
+            ).fetchone(),
+        )
+
+    @staticmethod
+    def latest_decided_approval(
+        connection: sqlite3.Connection,
+        *,
+        release_id: str,
+        gate: str,
+        decision: str,
+    ) -> sqlite3.Row | None:
+        return cast(
+            sqlite3.Row | None,
+            connection.execute(
+                """
+                SELECT * FROM approvals
+                WHERE release_id = ? AND gate = ? AND decision = ?
+                ORDER BY decided_at DESC, created_at DESC LIMIT 1
+                """,
+                (release_id, gate, decision),
             ).fetchone(),
         )
 

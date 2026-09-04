@@ -24,6 +24,13 @@
       "default": null,
       "title": "Pending Gate"
     },
+    "publication_states": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Publication States",
+      "type": "object"
+    },
     "release_id": {
       "title": "Release Id",
       "type": "string"
