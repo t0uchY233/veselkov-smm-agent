@@ -1,0 +1,115 @@
+{
+  "$defs": {
+    "RecoveryError": {
+      "additionalProperties": false,
+      "description": "A sanitized recovery error; credentials and provider bodies never enter it.",
+      "properties": {
+        "code": {
+          "enum": [
+            "PROVIDER_TIMEOUT",
+            "PROVIDER_HTTP_429",
+            "PROVIDER_HTTP_5XX",
+            "UNKNOWN_PROVIDER_OUTCOME",
+            "PROVIDER_AUTH_REQUIRED",
+            "PROVIDER_PERMISSION_DENIED",
+            "INVALID_PAYLOAD",
+            "RECEIPT_MISMATCH"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "sanitized_detail": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Sanitized Detail",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "sanitized_detail"
+      ],
+      "title": "RecoveryError",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Durable local incident retained even if its alert cannot be delivered.",
+  "properties": {
+    "error": {
+      "$ref": "#/$defs/RecoveryError"
+    },
+    "incident_id": {
+      "minLength": 1,
+      "title": "Incident Id",
+      "type": "string"
+    },
+    "job_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Job Id"
+    },
+    "opened_at": {
+      "format": "date-time",
+      "title": "Opened At",
+      "type": "string"
+    },
+    "platform": {
+      "anyOf": [
+        {
+          "enum": [
+            "youtube",
+            "dzen",
+            "telegram"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Platform"
+    },
+    "release_id": {
+      "minLength": 1,
+      "title": "Release Id",
+      "type": "string"
+    },
+    "safe_next_action": {
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Safe Next Action",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "incident_id",
+    "release_id",
+    "error",
+    "safe_next_action",
+    "opened_at"
+  ],
+  "title": "IncidentRecord",
+  "type": "object"
+}

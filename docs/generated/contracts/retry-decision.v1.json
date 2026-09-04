@@ -1,0 +1,87 @@
+{
+  "additionalProperties": false,
+  "description": "Pure retry result after a failed attempt, with an explicit exhausted state.",
+  "properties": {
+    "attempt_number": {
+      "minimum": 1,
+      "title": "Attempt Number",
+      "type": "integer"
+    },
+    "classification": {
+      "enum": [
+        "retryable",
+        "terminal"
+      ],
+      "title": "Classification",
+      "type": "string"
+    },
+    "disposition": {
+      "enum": [
+        "retry",
+        "exhausted",
+        "terminal"
+      ],
+      "title": "Disposition",
+      "type": "string"
+    },
+    "error_code": {
+      "enum": [
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_HTTP_429",
+        "PROVIDER_HTTP_5XX",
+        "UNKNOWN_PROVIDER_OUTCOME",
+        "PROVIDER_AUTH_REQUIRED",
+        "PROVIDER_PERMISSION_DENIED",
+        "INVALID_PAYLOAD",
+        "RECEIPT_MISMATCH"
+      ],
+      "title": "Error Code",
+      "type": "string"
+    },
+    "operation": {
+      "enum": [
+        "provider",
+        "notification"
+      ],
+      "title": "Operation",
+      "type": "string"
+    },
+    "retry_after_seconds": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Retry After Seconds"
+    },
+    "retry_policy_id": {
+      "enum": [
+        "provider-30s-2m-5m-15m",
+        "notification-1m-5m-15m"
+      ],
+      "title": "Retry Policy Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operation",
+    "retry_policy_id",
+    "error_code",
+    "classification",
+    "disposition",
+    "attempt_number"
+  ],
+  "title": "RetryDecision",
+  "type": "object"
+}

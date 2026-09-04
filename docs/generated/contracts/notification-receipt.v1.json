@@ -1,0 +1,40 @@
+{
+  "additionalProperties": false,
+  "description": "Validated delivery receipt; a mismatch is terminal and leaves the incident open.",
+  "properties": {
+    "delivered_at": {
+      "format": "date-time",
+      "title": "Delivered At",
+      "type": "string"
+    },
+    "notification_id": {
+      "minLength": 1,
+      "title": "Notification Id",
+      "type": "string"
+    },
+    "provider_receipt_id": {
+      "minLength": 1,
+      "title": "Provider Receipt Id",
+      "type": "string"
+    },
+    "recipient": {
+      "const": "276042853",
+      "default": "276042853",
+      "title": "Recipient",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "notification_id",
+    "provider_receipt_id",
+    "delivered_at"
+  ],
+  "title": "NotificationReceipt",
+  "type": "object"
+}

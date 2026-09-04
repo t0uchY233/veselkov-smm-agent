@@ -5,7 +5,17 @@ from pathlib import Path
 
 from smm_agent.contracts.cli import ErrorResponse, ReleaseResult
 from smm_agent.contracts.editorial import EditorialBundle, PlanDocument
-from smm_agent.contracts.publication import PublicationRequest, PublicationResult
+from smm_agent.contracts.publication import (
+    IncidentRecord,
+    NotificationJobPayload,
+    NotificationReceipt,
+    NotificationRequest,
+    PublicationRequest,
+    PublicationResult,
+    RecoveryError,
+    RecoveryJobPayload,
+    RetryDecision,
+)
 from smm_agent.contracts.video import AlignmentProfile, AlignmentResult, Transcript, VideoQc
 
 SCHEMAS = {
@@ -19,6 +29,13 @@ SCHEMAS = {
     "video-alignment-profile.v1.json": AlignmentProfile.model_json_schema(),
     "publication-request.v1.json": PublicationRequest.model_json_schema(),
     "publication-result.v1.json": PublicationResult.model_json_schema(),
+    "recovery-job-payload.v1.json": RecoveryJobPayload.model_json_schema(),
+    "recovery-error.v1.json": RecoveryError.model_json_schema(),
+    "retry-decision.v1.json": RetryDecision.model_json_schema(),
+    "incident-record.v1.json": IncidentRecord.model_json_schema(),
+    "notification-job-payload.v1.json": NotificationJobPayload.model_json_schema(),
+    "notification-request.v1.json": NotificationRequest.model_json_schema(),
+    "notification-receipt.v1.json": NotificationReceipt.model_json_schema(),
 }
 
 

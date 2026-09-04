@@ -3,11 +3,73 @@
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
-from smm_agent.contracts.publication import Platform, PreparedPublication, PublicationSnapshot
+from smm_agent.contracts.publication import (
+    NOTIFICATION_RETRY_DELAYS_SECONDS,
+    PROVIDER_RETRY_DELAYS_SECONDS,
+    RETRYABLE_RECOVERY_ERROR_CODES,
+    Platform,
+    PreparedPublication,
+    PublicationSnapshot,
+    RecoveryError,
+    RecoveryOperation,
+    RetryDecision,
+    RetryPolicyId,
+)
 
 
 class PublicationInvariantFailed(ValueError):
     pass
+
+
+def retry_decision(
+    error: RecoveryError, *, operation: RecoveryOperation, attempt_number: int
+) -> RetryDecision:
+    """Classify a failed recovery attempt without performing provider work.
+
+    Attempt numbers are one-based and refer to the failed attempt just recorded.
+    A temporary provider outcome always requires status reconciliation before the
+    engine submits another side effect using the persisted operation key.
+    """
+
+    if attempt_number < 1:
+        raise ValueError("Номер recovery attempt должен начинаться с 1.")
+    retry_policy_id: RetryPolicyId = (
+        "provider-30s-2m-5m-15m"
+        if operation == "provider"
+        else "notification-1m-5m-15m"
+    )
+    delays = (
+        PROVIDER_RETRY_DELAYS_SECONDS
+        if operation == "provider"
+        else NOTIFICATION_RETRY_DELAYS_SECONDS
+    )
+    if error.code not in RETRYABLE_RECOVERY_ERROR_CODES:
+        return RetryDecision(
+            operation=operation,
+            retry_policy_id=retry_policy_id,
+            error_code=error.code,
+            classification="terminal",
+            disposition="terminal",
+            attempt_number=attempt_number,
+        )
+    if attempt_number > len(delays):
+        return RetryDecision(
+            operation=operation,
+            retry_policy_id=retry_policy_id,
+            error_code=error.code,
+            classification="retryable",
+            disposition="exhausted",
+            attempt_number=attempt_number,
+        )
+    return RetryDecision(
+        operation=operation,
+        retry_policy_id=retry_policy_id,
+        error_code=error.code,
+        classification="retryable",
+        disposition="retry",
+        attempt_number=attempt_number,
+        retry_after_seconds=delays[attempt_number - 1],
+    )
 
 
 def validate_prepared_snapshot(
