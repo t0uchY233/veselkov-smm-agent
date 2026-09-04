@@ -199,7 +199,7 @@ class Database:
             UPDATE releases
             SET state = 'published', active = 0, revision = revision + 1,
                 updated_at = ?
-            WHERE release_id = ? AND revision = ? AND state = 'scheduled'
+            WHERE release_id = ? AND revision = ? AND state IN ('scheduled', 'recovering')
             """,
             (updated_at, release_id, expected_revision),
         )
