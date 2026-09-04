@@ -121,6 +121,11 @@ review закрыт; следующий срез — Slice 6.
 - **Out of scope:** публикация на боевых каналах без отдельного финального gate.
 - **Blocked by:** Slices 4–5 и реальные credentials/setup.
 
+Локальная foundation реализована и проверена в `evidence/slice-06-local.md`:
+production composition, provider adapters, Windows/task/ACL seams и fail-closed
+smoke harness готовы. Срез остаётся незавершённым до capability smoke на целевом
+Windows 11 ноутбуке с тестовыми ресурсами и ручной авторизацией.
+
 ### Slice 7: Один Codex-диалог проводит Автора от темы до финального «Окей»
 
 - **Delivers:** project skill всегда читает CLI status, показывает один gate и
