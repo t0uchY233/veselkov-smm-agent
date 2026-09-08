@@ -11,7 +11,7 @@ import ctypes
 import os
 from ctypes import POINTER, Structure, byref, wintypes
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 from smm_agent.platform.config import credential_target
 
@@ -89,8 +89,7 @@ class WindowsCredentialSecretReader:
             raise SecretUnavailableError() from None
 
     def _read_windows(self, target: str) -> SecretValue:
-        win_dll = getattr(ctypes, "WinDLL")
-        advapi32 = win_dll("advapi32", use_last_error=True)
+        advapi32 = cast(Any, ctypes).WinDLL("advapi32", use_last_error=True)
         pointer_type = POINTER(_CredentialW)
         credential = pointer_type()
         cred_read = advapi32.CredReadW

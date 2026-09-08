@@ -12,7 +12,7 @@ import ctypes
 import os
 from ctypes import POINTER, Structure, byref, wintypes
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from smm_agent.platform.config import credential_target
 
@@ -82,8 +82,7 @@ class WindowsCredentialManager:
 
     def _inspect_windows(self, target: str) -> CredentialAvailability:
         """Call CredReadW and free its native memory without inspecting its blob."""
-        win_dll = getattr(ctypes, "WinDLL")
-        advapi32 = win_dll("advapi32", use_last_error=True)
+        advapi32 = cast(Any, ctypes).WinDLL("advapi32", use_last_error=True)
         pointer_type = POINTER(_CredentialW)
         credential = pointer_type()
         cred_read = advapi32.CredReadW
@@ -98,15 +97,13 @@ class WindowsCredentialManager:
         cred_free.argtypes = [ctypes.c_void_p]
         cred_free.restype = None
         if not cred_read(target, self._CRED_TYPE_GENERIC, 0, byref(credential)):
-            get_last_error = getattr(ctypes, "get_last_error")
-            error = get_last_error()
+            error = cast(Any, ctypes).get_last_error()
             if error == self._ERROR_NOT_FOUND:
                 return CredentialAvailability(
                     state="unavailable",
                     message="Указанный credential не найден в Credential Manager.",
                 )
-            win_error = getattr(ctypes, "WinError")
-            raise win_error(error)
+            raise cast(Any, ctypes).WinError(error)
         try:
             return CredentialAvailability(
                 state="available",
