@@ -28,6 +28,7 @@ from pydantic import (
 
 CONFIG_SCHEMA_VERSION = "1.0"
 CREDENTIAL_REFERENCE_PREFIX = "windows-credential:"
+_UNRESOLVED_IDENTITY_PREFIXES = ("configure", "pending", "replace_me")
 
 
 def default_data_root() -> Path:
@@ -67,6 +68,16 @@ def _credential_reference(value: object) -> str:
     target = value.removeprefix(CREDENTIAL_REFERENCE_PREFIX)
     if not target or len(target) > 256 or any(char in target for char in "\r\n\x00"):
         raise ValueError("Credential target пустой или содержит недопустимые символы.")
+    return value
+
+
+def _confirmed_external_identity(value: str, *, field_name: str) -> str:
+    normalized = value.strip()
+    if normalized != value or any(character in value for character in "\x00\r\n"):
+        raise ValueError(f"{field_name} должен быть явно указан без управляющих символов.")
+    marker = normalized.casefold()
+    if not normalized or marker.startswith(_UNRESOLVED_IDENTITY_PREFIXES):
+        raise ValueError(f"{field_name} требует подтверждённого внешнего идентификатора.")
     return value
 
 
@@ -141,6 +152,11 @@ class YouTubeConfig(StrictConfigModel):
     channel_id: str = Field(min_length=1, max_length=128)
     credential_ref: CredentialReference
 
+    @field_validator("channel_id")
+    @classmethod
+    def validate_channel_id(cls, value: str) -> str:
+        return _confirmed_external_identity(value, field_name="YouTube channel_id")
+
 
 class DzenConfig(StrictConfigModel):
     channel_url: str
@@ -158,15 +174,18 @@ class DzenConfig(StrictConfigModel):
     @field_validator("author_identity")
     @classmethod
     def validate_author_identity(cls, value: str) -> str:
-        if value != value.strip() or any(character in value for character in "\x00\r\n"):
-            raise ValueError("Dzen author_identity должен быть явной непустой строкой.")
-        return value
+        return _confirmed_external_identity(value, field_name="Dzen author_identity")
 
 
 class TelegramConfig(StrictConfigModel):
     channel_id: str = Field(min_length=1, max_length=128)
     bot_credential_ref: CredentialReference
     alert_recipient_id: str = Field(min_length=1, max_length=64)
+
+    @field_validator("channel_id")
+    @classmethod
+    def validate_channel_id(cls, value: str) -> str:
+        return _confirmed_external_identity(value, field_name="Telegram channel_id")
 
     @field_validator("alert_recipient_id")
     @classmethod

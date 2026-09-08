@@ -35,17 +35,32 @@ class WindowsSecurityInspector(Protocol):
     ) -> tuple[CapabilityCheck, ...]: ...
 
 
+def _decode_windows_command_stdout(
+    executable: str,
+    stdout: bytes,
+    *,
+    is_windows: bool,
+    oem_encoding: str = "oem",
+) -> str:
+    encoding = (
+        oem_encoding
+        if is_windows and Path(executable).name.casefold() == "icacls.exe"
+        else "utf-8"
+    )
+    return stdout.decode(encoding, errors="replace")
+
+
 class SubprocessSecurityCommandRunner:
     def run(self, arguments: Sequence[str]) -> SecurityCommandResult:
         completed = subprocess.run(  # noqa: S603 -- fixed Windows commands, list argv
             list(arguments),
             check=False,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
         )
-        return SecurityCommandResult(returncode=completed.returncode, stdout=completed.stdout)
+        stdout = _decode_windows_command_stdout(
+            arguments[0], completed.stdout, is_windows=os.name == "nt"
+        )
+        return SecurityCommandResult(returncode=completed.returncode, stdout=stdout)
 
 
 class WindowsAclInspector:

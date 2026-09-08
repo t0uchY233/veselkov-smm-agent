@@ -105,6 +105,10 @@ Telegram:
 
 - Playwright запускается на Windows с persistent profile;
 - setup открывает headful browser для ручного login/MFA Sardor;
+- после входа adapter обязан выбрать и подтвердить канал «Экономика не для
+  всех!» (`https://dzen.ru/ekonomikadliavseh`) до любой mutation; находящийся в
+  том же профиле пустой канал «Админ Экономика не для всех» с пометкой
+  «Основной» запрещён для создания, редактирования и публикации материалов;
 - adapter создаёт draft, вставляет тот же Основной текст, оформление, cover и
   визуалы, задаёт target и сохраняет выданную рабочую ссылку, screenshot и DOM assertions;
 - CAPTCHA/MFA не обходятся;

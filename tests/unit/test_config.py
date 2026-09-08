@@ -100,6 +100,26 @@ def test_config_requires_dzen_author_identity(tmp_path: Path) -> None:
         SmmAgentConfig.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("group", "field"),
+    (
+        ("youtube", "channel_id"),
+        ("dzen", "author_identity"),
+        ("telegram", "channel_id"),
+    ),
+)
+def test_config_rejects_unresolved_external_identity_placeholders(
+    tmp_path: Path, group: str, field: str
+) -> None:
+    payload = config_payload(tmp_path)
+    values = payload[group]
+    assert isinstance(values, dict)
+    values[field] = f"CONFIGURE_{group.upper()}_{field.upper()}"
+
+    with pytest.raises(ValidationError, match="подтвержд"):
+        SmmAgentConfig.model_validate(payload)
+
+
 def test_load_config_is_versioned_and_does_not_echo_invalid_input(tmp_path: Path) -> None:
     config_path = tmp_path / "smm-agent.toml"
     config_path.write_text(

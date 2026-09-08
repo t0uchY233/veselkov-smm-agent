@@ -8,6 +8,7 @@ from smm_agent.adapters.publishing.dzen import DzenPublisher
 from smm_agent.adapters.publishing.dzen_receipts import JsonDzenReceiptStore
 from smm_agent.adapters.secrets.credential_manager import CredentialAvailability
 from smm_agent.adapters.secrets.secret_reader import SecretValue
+from smm_agent.adapters.windows.security import _decode_windows_command_stdout
 from smm_agent.adapters.windows.task_scheduler import (
     CommandResult,
     TaskScheduleSpec,
@@ -213,6 +214,16 @@ def _configured_resources(root: Path) -> SmmAgentConfig:
             "backup": {"backup_root": str(root / "backups")},
         }
     )
+
+
+def test_icacls_output_uses_windows_oem_encoding_for_cyrillic_account() -> None:
+    raw = "DESKTOP-R00H9C9\\Ассистент:(OI)(CI)(M)".encode("cp866")
+
+    decoded = _decode_windows_command_stdout(
+        "icacls.exe", raw, is_windows=True, oem_encoding="cp866"
+    )
+
+    assert "DESKTOP-R00H9C9\\Ассистент:(OI)(CI)(M)" == decoded
 
 
 def test_capability_report_is_typed_and_does_not_claim_live_production(tmp_path: Path) -> None:
