@@ -1,0 +1,92 @@
+{
+  "additionalProperties": false,
+  "description": "The technical Telegram alert request; it is separate from release content.",
+  "properties": {
+    "error_code": {
+      "enum": [
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_HTTP_429",
+        "PROVIDER_HTTP_5XX",
+        "UNKNOWN_PROVIDER_OUTCOME",
+        "PROVIDER_AUTH_REQUIRED",
+        "PROVIDER_PERMISSION_DENIED",
+        "DZEN_DOM_MISMATCH",
+        "INVALID_PAYLOAD",
+        "RECEIPT_MISMATCH"
+      ],
+      "title": "Error Code",
+      "type": "string"
+    },
+    "incident_id": {
+      "minLength": 1,
+      "title": "Incident Id",
+      "type": "string"
+    },
+    "notification_id": {
+      "minLength": 1,
+      "title": "Notification Id",
+      "type": "string"
+    },
+    "occurred_at": {
+      "format": "date-time",
+      "title": "Occurred At",
+      "type": "string"
+    },
+    "platform": {
+      "anyOf": [
+        {
+          "enum": [
+            "youtube",
+            "dzen",
+            "telegram"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Platform"
+    },
+    "recipient": {
+      "const": "276042853",
+      "default": "276042853",
+      "title": "Recipient",
+      "type": "string"
+    },
+    "release_id": {
+      "minLength": 1,
+      "title": "Release Id",
+      "type": "string"
+    },
+    "safe_next_action": {
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Safe Next Action",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "suppression_key": {
+      "minLength": 1,
+      "title": "Suppression Key",
+      "type": "string"
+    }
+  },
+  "required": [
+    "notification_id",
+    "incident_id",
+    "release_id",
+    "error_code",
+    "occurred_at",
+    "safe_next_action",
+    "suppression_key"
+  ],
+  "title": "NotificationRequest",
+  "type": "object"
+}

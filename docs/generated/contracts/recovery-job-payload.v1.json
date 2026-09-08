@@ -1,0 +1,69 @@
+{
+  "additionalProperties": false,
+  "description": "A status-first, idempotent reconciliation job for one missing platform.",
+  "properties": {
+    "operation_key": {
+      "minLength": 1,
+      "title": "Operation Key",
+      "type": "string"
+    },
+    "payload_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Payload Sha256",
+      "type": "string"
+    },
+    "platform": {
+      "enum": [
+        "youtube",
+        "dzen",
+        "telegram"
+      ],
+      "title": "Platform",
+      "type": "string"
+    },
+    "publication_idempotency_key": {
+      "minLength": 1,
+      "title": "Publication Idempotency Key",
+      "type": "string"
+    },
+    "release_id": {
+      "minLength": 1,
+      "title": "Release Id",
+      "type": "string"
+    },
+    "remote_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Remote Id"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "target_at_utc": {
+      "format": "date-time",
+      "title": "Target At Utc",
+      "type": "string"
+    }
+  },
+  "required": [
+    "release_id",
+    "platform",
+    "target_at_utc",
+    "payload_sha256",
+    "publication_idempotency_key",
+    "operation_key"
+  ],
+  "title": "RecoveryJobPayload",
+  "type": "object"
+}

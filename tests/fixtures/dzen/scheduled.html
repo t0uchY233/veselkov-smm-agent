@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ru">
+  <body>
+    <main data-testid="dzen-editor-authenticated">
+      <div
+        data-testid="dzen-session-identity"
+        data-channel-url="https://dzen.ru/ekonomikadliavseh"
+        data-author-identity="veselkov-economy"
+      ></div>
+      <input data-testid="dzen-schedule-at-utc">
+      <button data-testid="dzen-schedule">Запланировать</button>
+      <button data-testid="dzen-cancel-schedule">Отменить</button>
+      <article
+        data-testid="dzen-article"
+        data-article-url="https://dzen.ru/a/draft-42"
+        data-publication-state="scheduled"
+        data-target-at-utc="2099-09-10T11:00:00Z"
+      >
+        <h1 data-testid="dzen-article-title">Контракт и деньги</h1>
+      </article>
+    </main>
+  </body>
+</html>

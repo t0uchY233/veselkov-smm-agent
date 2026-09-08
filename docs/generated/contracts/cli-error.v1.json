@@ -1,0 +1,55 @@
+{
+  "$defs": {
+    "ErrorDetail": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": true,
+          "title": "Details",
+          "type": "object"
+        },
+        "hint": {
+          "title": "Hint",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "requestId": {
+          "title": "Requestid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "hint",
+        "requestId"
+      ],
+      "title": "ErrorDetail",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "$ref": "#/$defs/ErrorDetail"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "error"
+  ],
+  "title": "ErrorResponse",
+  "type": "object"
+}

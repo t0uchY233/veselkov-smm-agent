@@ -1,0 +1,49 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "idempotency_key": {
+      "minLength": 1,
+      "title": "Idempotency Key",
+      "type": "string"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    },
+    "payload_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Payload Sha256",
+      "type": "string"
+    },
+    "platform": {
+      "enum": [
+        "youtube",
+        "dzen",
+        "telegram"
+      ],
+      "title": "Platform",
+      "type": "string"
+    },
+    "release_id": {
+      "minLength": 1,
+      "title": "Release Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "release_id",
+    "platform",
+    "idempotency_key",
+    "payload_sha256",
+    "payload"
+  ],
+  "title": "PublicationRequest",
+  "type": "object"
+}

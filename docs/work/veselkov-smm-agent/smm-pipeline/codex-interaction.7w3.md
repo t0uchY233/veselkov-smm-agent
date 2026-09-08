@@ -44,7 +44,7 @@
 
 - Инструкция интерфейса: .agents/skills/veselkov-smm/SKILL.md.
 - Командный контракт: src/smm_agent/cli/.
-- Читаемые карточки результата: var/releases/<release-id>/views/.
+- Читаемые карточки результата: `<data-root>/releases/<release-id>/views/`.
 - Источник фактов о стадии: Манифест Выпуска, а не история чата.
 
 ## When

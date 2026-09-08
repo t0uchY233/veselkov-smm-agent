@@ -1,0 +1,93 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "accepted_at": {
+      "format": "date-time",
+      "title": "Accepted At",
+      "type": "string"
+    },
+    "accepted_by": {
+      "const": "operator",
+      "title": "Accepted By",
+      "type": "string"
+    },
+    "asr_argv_template": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 2,
+      "title": "Asr Argv Template",
+      "type": "array"
+    },
+    "asr_executable_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Asr Executable Sha256",
+      "type": "string"
+    },
+    "asr_runtime": {
+      "minLength": 1,
+      "title": "Asr Runtime",
+      "type": "string"
+    },
+    "author_focal_x": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Author Focal X",
+      "type": "number"
+    },
+    "author_focal_y": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Author Focal Y",
+      "type": "number"
+    },
+    "confidence_threshold": {
+      "maximum": 0.99,
+      "minimum": 0.5,
+      "title": "Confidence Threshold",
+      "type": "number"
+    },
+    "corpus_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Corpus Sha256",
+      "type": "string"
+    },
+    "ffmpeg_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Ffmpeg Sha256",
+      "type": "string"
+    },
+    "ffprobe_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Ffprobe Sha256",
+      "type": "string"
+    },
+    "model_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Model Sha256",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "asr_runtime",
+    "asr_argv_template",
+    "asr_executable_sha256",
+    "model_sha256",
+    "corpus_sha256",
+    "ffmpeg_sha256",
+    "ffprobe_sha256",
+    "author_focal_x",
+    "author_focal_y",
+    "confidence_threshold",
+    "accepted_by",
+    "accepted_at"
+  ],
+  "title": "AlignmentProfile",
+  "type": "object"
+}

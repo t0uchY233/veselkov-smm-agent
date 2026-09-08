@@ -1,0 +1,114 @@
+{
+ "version": 1,
+ "tasks": {
+  "slice5/contracts": {
+   "title": "Retry, recovery, incident and notification contracts plus migration",
+   "kind": "contract",
+   "deps": [],
+   "tier": "T3+",
+   "doc": "spec.md",
+   "status": "done",
+   "claimedAt": "2026-09-04T09:22:58+00:00",
+   "doneAt": "2026-09-04T09:32:54+00:00"
+  },
+  "slice5/job-engine": {
+   "title": "Fenced job claims, heartbeat, retry schedule and crash recovery",
+   "kind": "platform",
+   "deps": [
+    "slice5/contracts"
+   ],
+   "tier": "T3",
+   "doc": "spec.md",
+   "status": "done",
+   "claimedAt": "2026-09-04T09:33:23+00:00",
+   "doneAt": "2026-09-04T09:45:09+00:00"
+  },
+  "slice5/reconciliation": {
+   "title": "GC-04 reconcile only missing platforms without duplicate remote IDs",
+   "kind": "feature",
+   "deps": [
+    "slice5/contracts",
+    "slice5/job-engine"
+   ],
+   "tier": "T3",
+   "doc": "spec.md",
+   "status": "done",
+   "claimedAt": "2026-09-04T09:45:26+00:00",
+   "doneAt": "2026-09-04T09:58:18+00:00"
+  },
+  "slice5/notification": {
+   "title": "Alert Sardor 276042853 after terminal recovery failure with local fallback",
+   "kind": "feature",
+   "deps": [
+    "slice5/contracts",
+    "slice5/job-engine"
+   ],
+   "tier": "T2",
+   "doc": "spec.md",
+   "status": "done",
+   "claimedAt": "2026-09-04T09:45:26+00:00",
+   "doneAt": "2026-09-04T09:53:42+00:00"
+  },
+  "slice5/integration": {
+   "title": "Wire one worker path and prove GC-04 plus crash points end to end",
+   "kind": "integration",
+   "deps": [
+    "slice5/reconciliation",
+    "slice5/notification"
+   ],
+   "tier": "T3",
+   "doc": "plan.md",
+   "status": "done",
+   "claimedAt": "2026-09-04T09:58:30+00:00",
+   "doneAt": "2026-09-04T10:10:40+00:00"
+  },
+  "slice5/review-evidence": {
+   "title": "Fresh adversarial review, guarded full gate and Slice 5 evidence",
+   "kind": "review",
+   "deps": [
+    "slice5/integration"
+   ],
+   "tier": "T3",
+   "doc": "plan.md",
+   "status": "done",
+   "claimedAt": "2026-09-04T10:11:24+00:00",
+   "doneAt": "2026-09-04T10:41:59+00:00"
+  },
+  "slice6/capabilities": {
+   "title": "Real provider and Windows capability checks",
+   "kind": "integration",
+   "deps": [
+    "slice5/review-evidence"
+   ],
+   "tier": "T3",
+   "doc": "plan.md",
+   "status": "claimed",
+   "claimedAt": "2026-09-04T10:42:29+00:00",
+   "doneAt": null
+  },
+  "slice7/codex-flow": {
+   "title": "One Codex dialogue guides the Author through every gate",
+   "kind": "feature",
+   "deps": [
+    "slice6/capabilities"
+   ],
+   "tier": "T3",
+   "doc": "plan.md",
+   "status": "open",
+   "claimedAt": null,
+   "doneAt": null
+  },
+  "slice8/delivery": {
+   "title": "Windows bundle, installer, updater, rollback, CI and HTML report",
+   "kind": "integration",
+   "deps": [
+    "slice7/codex-flow"
+   ],
+   "tier": "T3",
+   "doc": "plan.md",
+   "status": "open",
+   "claimedAt": null,
+   "doneAt": null
+  }
+ }
+}

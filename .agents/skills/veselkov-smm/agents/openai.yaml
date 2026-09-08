@@ -1,0 +1,4 @@
+interface:
+  display_name: "Веселков SMM"
+  short_description: "Проводит выпуск от темы до публикации"
+  default_prompt: "Проведи текущий выпуск по следующему допустимому шагу."

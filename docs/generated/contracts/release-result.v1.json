@@ -1,0 +1,83 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Artifacts",
+      "type": "object"
+    },
+    "next_action": {
+      "title": "Next Action",
+      "type": "string"
+    },
+    "pending_gate": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pending Gate"
+    },
+    "publication_states": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Publication States",
+      "type": "object"
+    },
+    "release_id": {
+      "title": "Release Id",
+      "type": "string"
+    },
+    "revision": {
+      "title": "Revision",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "state": {
+      "title": "State",
+      "type": "string"
+    },
+    "target_at_utc": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Target At Utc"
+    },
+    "target_timezone": {
+      "default": "Europe/Moscow",
+      "title": "Target Timezone",
+      "type": "string"
+    },
+    "topic": {
+      "title": "Topic",
+      "type": "string"
+    }
+  },
+  "required": [
+    "release_id",
+    "revision",
+    "state",
+    "topic",
+    "next_action"
+  ],
+  "title": "ReleaseResult",
+  "type": "object"
+}

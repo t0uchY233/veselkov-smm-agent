@@ -1,0 +1,67 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "audio_codec": {
+      "title": "Audio Codec",
+      "type": "string"
+    },
+    "checks": {
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "title": "Checks",
+      "type": "object"
+    },
+    "decoded": {
+      "title": "Decoded",
+      "type": "boolean"
+    },
+    "duration_seconds": {
+      "exclusiveMinimum": 0,
+      "title": "Duration Seconds",
+      "type": "number"
+    },
+    "height": {
+      "exclusiveMinimum": 0,
+      "title": "Height",
+      "type": "integer"
+    },
+    "passed": {
+      "title": "Passed",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "size_bytes": {
+      "minimum": 0,
+      "title": "Size Bytes",
+      "type": "integer"
+    },
+    "video_codec": {
+      "title": "Video Codec",
+      "type": "string"
+    },
+    "width": {
+      "exclusiveMinimum": 0,
+      "title": "Width",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "passed",
+    "duration_seconds",
+    "width",
+    "height",
+    "video_codec",
+    "audio_codec",
+    "decoded",
+    "size_bytes",
+    "checks"
+  ],
+  "title": "VideoQc",
+  "type": "object"
+}

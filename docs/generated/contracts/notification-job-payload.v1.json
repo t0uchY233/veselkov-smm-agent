@@ -1,0 +1,46 @@
+{
+  "additionalProperties": false,
+  "description": "Durable delivery job for a previously created notification request.",
+  "properties": {
+    "incident_id": {
+      "minLength": 1,
+      "title": "Incident Id",
+      "type": "string"
+    },
+    "notification_id": {
+      "minLength": 1,
+      "title": "Notification Id",
+      "type": "string"
+    },
+    "recipient": {
+      "const": "276042853",
+      "default": "276042853",
+      "title": "Recipient",
+      "type": "string"
+    },
+    "release_id": {
+      "minLength": 1,
+      "title": "Release Id",
+      "type": "string"
+    },
+    "request_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Request Sha256",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "notification_id",
+    "incident_id",
+    "release_id",
+    "request_sha256"
+  ],
+  "title": "NotificationJobPayload",
+  "type": "object"
+}

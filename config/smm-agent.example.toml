@@ -1,0 +1,59 @@
+# Copy to config/smm-agent.toml on the Windows laptop.  That real file is ignored by Git.
+# Replace every CONFIGURE path with an explicitly chosen absolute path.  Do not use ~,
+# environment variables, tokens, cookies, or password values in this file.
+schema_version = "1.0"
+
+[runtime]
+data_root = 'C:\VeselkovSmm\CONFIGURE\runtime'
+timezone = "Europe/Moscow"
+
+[files]
+recording_inbox = 'C:\VeselkovSmm\CONFIGURE\recordings-inbox'
+portrait_reference_dir = 'C:\VeselkovSmm\CONFIGURE\portrait-references'
+
+[media]
+ffmpeg_path = 'C:\VeselkovSmm\CONFIGURE\ffmpeg\bin\ffmpeg.exe'
+ffprobe_path = 'C:\VeselkovSmm\CONFIGURE\ffmpeg\bin\ffprobe.exe'
+asr_asset = 'C:\VeselkovSmm\CONFIGURE\asr\model.bin'
+calibration_corpus = 'C:\VeselkovSmm\CONFIGURE\calibration\veselkov.json'
+crop_profile = 'C:\VeselkovSmm\CONFIGURE\profiles\author-left.json'
+
+[schedule]
+task_folder = '\VeselkovSmm'
+worker_task_name = "worker"
+worker_executable = 'C:\VeselkovSmm\current\smm-worker.exe'
+# An explicit setup account is required for logged-off task execution.
+run_as_user = "CONFIGURE_WINDOWS_ACCOUNT"
+task_credential_ref = "windows-credential:VeselkovSmmAgent/TaskAccount"
+preflight_offset_minutes = 30
+
+[youtube]
+channel_id = "CONFIGURE_YOUTUBE_CHANNEL_ID"
+credential_ref = "windows-credential:VeselkovSmmAgent/YouTubeOAuth"
+
+[dzen]
+channel_url = "https://dzen.ru/ekonomikadliavseh"
+# Exact identity shown by the verified Dzen Studio session; it is not a login or secret.
+author_identity = "CONFIGURE_DZEN_AUTHOR_IDENTITY"
+browser_profile = 'C:\VeselkovSmm\CONFIGURE\dzen-browser-profile'
+
+[telegram]
+channel_id = "@veselkoveconomy"
+bot_credential_ref = "windows-credential:VeselkovSmmAgent/TelegramBot"
+alert_recipient_id = "276042853"
+
+[codex]
+# Copy the installed Humanize version/hash and the SHA-256 of tone-of-voice.md.
+humanizer_skill_version = "CONFIGURE_FROM_SKILLS_LOCK"
+tone_of_voice_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[observability]
+log_path = 'C:\VeselkovSmm\CONFIGURE\logs\agent.jsonl'
+retention_days = 90
+
+[delivery]
+app_version = "0.1.0"
+commit_sha = "0000000"
+
+[backup]
+backup_root = 'D:\VeselkovSmmBackups'

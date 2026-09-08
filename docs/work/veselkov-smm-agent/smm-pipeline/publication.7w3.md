@@ -4,156 +4,164 @@
 
 ## Wish
 
-После финального «Окей» утверждённые версии видео, Дзена и Telegram без участия
-Sardor становятся публичными по четвергам в 14:00 по Москве либо в явно
-изменённый Автором момент. До старта система не допускает заведомо неполный
-Выпуск, а после частичного внешнего сбоя восстанавливает недостающие публикации
-без дублей.
+После финального «Окей» утверждённые материалы без участия Sardor становятся
+публичными в YouTube, Дзене и Telegram в один target window. До первой public
+операции любой общий сбой задерживает весь Выпуск; после частичного внешнего
+сбоя система сохраняет успешное и повторяет только отсутствующее без дублей.
 
 ## Why
 
 ### Causes
 
-YouTube уже автоматизирован, но Дзен и Telegram публикует Sardor. Три внешние
-площадки не дают общей транзакции, имеют разные лимиты и могут завершать
-операции с задержкой или ошибкой.
+Площадки не дают общей транзакции. YouTube поддерживает нативную отложку,
+отложенная публикация Дзена заранее выдаёт рабочую ссылку, а Telegram Bot API
+не имеет отложенной отправки. Ноутбук может спать или быть выключен.
 
 ### Intentions
 
-Спрятать площадочные различия за адаптерами, готовить всё непублично до target
-time и отделить prepare от arm/publish. Сделать каждую операцию повторяемой по
-стабильному ключу Выпуска.
+Разделить непубличную подготовку и отложенный public transition. Использовать
+нативное расписание YouTube и Дзена, а для Telegram создать локальную Windows
+task после получения обеих ссылок. Сделать операции идемпотентными и явно
+восстанавливать неизбежный частичный сбой при выключенном ноутбуке.
 
 ## What
 
-Это публикационный оркестратор и три адаптера с единым контрактом:
+Publication coordinator и три адаптера используют контракт:
 
-- prepare создаёт непубличный draft/upload и возвращает remote_id, preview_url и
-  capability report;
-- validate подтверждает наличие правильной версии, ссылок, медиа и прав;
-- arm назначает target time либо регистрирует локальную timed job;
-- status читает фактическое состояние;
-- compensate отменяет ещё не публичное расписание;
-- retry повторяет только отсутствующую операцию с тем же idempotency key.
+- `prepare` создаёт private upload/draft/local payload;
+- `validate` проверяет правильную версию, права, remote state и известные URL;
+- `arm` ставит YouTube/Дзен в нативную отложку либо Telegram в локальную;
+- `publish` отправляет Telegram в target или восстанавливает пропущенную отправку;
+- `status` читает фактическое состояние;
+- `cancel_schedule` отменяет ещё не public отложку, когда площадка это позволяет;
+- `retry_missing` повторяет только отсутствующий side effect с прежним
+  idempotency key.
+
+`schedule` означает подтверждённую нативную отложку для YouTube и Дзена и
+durable job в SQLite и Windows Task Scheduler для Telegram.
 
 ## Who
 
-- Сергей Николаевич финально утверждает master, обложку, метаданные и посты.
-- Publication orchestrator координирует три адаптера и preflight.
+- Автор утверждает master, Telegram-копию, обложку, metadata, posts и target.
+- Worker готовит resources и исполняет target job.
 - YouTube adapter использует OAuth канала Автора.
-- Dzen adapter v1 работает через изолированную browser automation.
-- Telegram adapter публикует в канале и при аварии пишет Sardor на ID 276042853.
-- Sardor один раз выдаёт доступы и реагирует только на исчерпанные автоматические
-  попытки.
+- Dzen adapter использует отдельный локальный Playwright profile.
+- Telegram adapter публикует channel message и отправляет аварийный alert.
+- Sardor один раз выдаёт доступы и реагирует только на terminal incident.
 
 ## Where
 
-- Интерфейсы адаптеров: src/smm_agent/publishing/.
-- Площадочные реализации: publishing/youtube.py, dzen.py и telegram.py.
-- Расписание и попытки: var/runtime/jobs.sqlite3.
-- Remote IDs, URLs, версии и статусы: Манифест Выпуска.
-- Секреты: системное хранилище учётных данных с отдельными ключами по площадкам.
-- Аварийный recipient: Telegram user ID 276042853.
-- Target timezone: Europe/Moscow, независимо от timezone хоста.
+- Контракты: `src/smm_agent/domain/publication/ports.py`.
+- Реализации: `src/smm_agent/adapters/publishing/`.
+- Jobs, attempts, remote IDs, URLs и states: единая SQLite DB.
+- Payload bytes: release artifact directory.
+- Credentials: Windows Credential Manager.
+- Dzen session: локальный browser profile под NTFS ACL.
+- Target timezone: `Europe/Moscow`.
 
 ## When
 
-Значение по умолчанию — ближайший четверг 14:00 Europe/Moscow, для которого
-успевает preflight. Автор видит и может изменить дату до финального gate.
+Default target — ближайший четверг 14:00 Europe/Moscow, который ещё допускает
+полный prepare. Автор видит и может изменить target до финального gate.
 
 После final approval:
 
-1. prepare YouTube и Дзен в непубличном состоянии;
-2. получить их стабильные ссылки;
-3. вставить ссылки в Telegram caption и повторно проверить предел 1000;
-4. проверить Telegram video capability и права канала;
-5. validate все три результата;
-6. только после общего успеха выполнить arm;
-7. проверить provider states до target time;
-8. в target time отправить локально запланированные действия;
-9. наблюдать состояния до published или delayed.
+1. загрузить YouTube video как private и получить `video_id`;
+2. создать Dzen draft с обложкой и 3–5 визуалами;
+3. поставить статью Дзена в отложку и сохранить выданный material URL;
+4. собрать Telegram caption с YouTube/Dzen links и проверить 1000 символов;
+5. проверить Telegram-копию и channel rights;
+6. выполнить общий prepare validation;
+7. поставить YouTube в нативную отложку, создать T−30 preflight task и T Telegram task;
+8. в T−30 проверить нативные schedules, worker, сеть, credentials и payload;
+9. в T площадки публикуют YouTube/Дзен, а Windows task отправляет Telegram;
+10. наблюдать до `published`, `recovering`, `delayed` или `needs_attention`.
+
+Если T−30 preflight не проходит, worker до target отменяет все три schedules и
+переводит Выпуск в delayed. Если ноутбук выключен в target, YouTube и Дзен могут
+стать public без Telegram; reconciliation отправляет только отсутствующий пост
+после запуска ноутбука и создаёт incident о нарушении target window.
 
 ## Method
 
 YouTube:
 
-- resumable videos.insert с title, description, tags и private status;
-- дождаться успешной обработки;
-- установить thumbnail и metadata;
-- status.publishAt задаётся только private и никогда не публиковавшемуся видео;
-- сохранить video_id и будущий URL до сборки Telegram caption.
+- resumable upload с `privacyStatus=private`;
+- дождаться processing complete, затем установить metadata и thumbnail;
+- задать `status.publishAt` для private video и подтвердить schedule через API;
+- после target сверить фактический public state.
 
 Telegram:
 
-- публиковать master как нативное streaming-video и caption одним сообщением;
-- caption хранится как plain Unicode text плюс entities для кликабельных слов;
-- после entities parsing не более 1000 видимых символов;
-- 5–10-минутный master ожидаемо может превысить 50 МБ, поэтому v1 использует
-  локальный Telegram Bot API Server с лимитом до 2000 МБ; его health и реальный
-  upload проверяются до arm;
-- отложка реализуется локальной timed job, а не надеждой на открытый Codex.
+- отправить `telegram-video.mp4` как native streaming video вместе с caption;
+- caption — Unicode text + entities, не более 1000 видимых символов;
+- слова «блоге» и «YouTube» ссылаются на материалы этого Выпуска;
+- CTA и три reaction rows входят в предел;
+- cloud Bot API используется только если файл ≤49 000 000 bytes;
+- `release_id + telegram` связывается с одним `message_id`; перед retry adapter
+  сверяет сохранённый result и recent channel messages.
 
 Дзен:
 
-- ядро зависит только от DzenPublisher contract;
-- поскольку публичный официальный API публикации статей не подтверждён, v1
-  использует Playwright-адаптер с отдельным persistent browser profile и
-  одноразовым ручным входом в аккаунт;
-- адаптер работает только с заранее описанными действиями редактора Дзена,
-  сохраняет скриншот и DOM-диагностику на каждом сбое и не обходит CAPTCHA или
-  MFA;
-- статья готовится как непубличный черновик, а публикация выполняется встроенной
-  отложкой Дзена, если capability check её подтверждает; иначе её запускает
-  локальная timed job в target time;
-- adapter обязан создать оформленную статью, загрузить обложку и 3–5 визуалов,
-  вернуть preview/remote ID и поддержать проверку фактической публикации.
+- Playwright запускается на Windows с persistent profile;
+- setup открывает headful browser для ручного login/MFA Sardor;
+- после входа adapter обязан выбрать и подтвердить канал «Экономика не для
+  всех!» (`https://dzen.ru/ekonomikadliavseh`) до любой mutation; находящийся в
+  том же профиле пустой канал «Админ Экономика не для всех» с пометкой
+  «Основной» запрещён для создания, редактирования и публикации материалов;
+- adapter создаёт draft, вставляет тот же Основной текст, оформление, cover и
+  визуалы, задаёт target и сохраняет выданную рабочую ссылку, screenshot и DOM assertions;
+- CAPTCHA/MFA не обходятся;
+- capability tracer bullet обязан доказать draft identity, стабильность ссылки
+  отложенного материала и проверку schedule/public state до production readiness.
 
-Координация:
+Publication coordination:
 
-- release_id + platform образуют idempotency key;
-- preflight failure до arm переводит Выпуск в delayed, ничего не публикует и
-  отправляет аварийное сообщение Sardor;
-- ошибка arm вызывает compensate уже вооружённых, но ещё приватных ресурсов;
-- если часть стала public, ничего не удаляется: недостающие операции
-  повторяются с теми же keys;
-- после ограниченного числа повторов состояние needs_attention и сообщение
-  Sardor содержат release_id, площадку, последнюю ошибку и безопасное действие.
+- ссылка YouTube известна после private upload, ссылка Дзена — после создания
+  отложенной публикации; только затем собирается финальный Telegram payload;
+- до target сбой общей проверки отменяет доступные нативные schedules;
+- после первого public результата любая ошибка переводит Выпуск в recovering;
+- public content автоматически не удаляется.
+
+Retry policy по умолчанию для временных provider errors: 30 секунд, 2 минуты,
+5 минут и 15 минут. Permanent auth/permission/schema errors не повторяются.
+После исчерпания создаётся incident и alert Sardor с ID 276042853.
 
 ## Boundaries
 
-- Модуль не меняет утверждённый контент для прохождения API.
-- Он не публикует без hash-valid final approval.
-- Он не удаляет уже публичные материалы автоматически.
-- Он не создаёт аккаунты и не обходит CAPTCHA, MFA или правила площадок.
-- Sardor не подтверждает контент и не запускает штатную публикацию.
+- Модуль не меняет утверждённый контент ради прохождения площадки.
+- Публикация невозможна без совпадения hashes final approval.
+- YouTube и Дзен должны использовать нативное расписание; Telegram — Windows task.
+- Public material не удаляется автоматически.
+- Adapter не обходит CAPTCHA, MFA или правила площадки.
+- Sardor не является штатным публикационным оператором.
 
 ## Limitations
 
-- Публикации не могут появиться физически атомарно. Целевой SLO: каждая площадка
-  получает команду на target time, а видимое расхождение до 5 минут считается
-  штатной задержкой провайдера; больший разрыв запускает recovery.
-- Unverified YouTube API project может оставлять upload private до прохождения
-  audit Google.
-- Дзен является главным интеграционным риском: browser automation зависит от
-  разметки редактора, а истечение сессии требует повторного ручного входа.
-- Local Bot API Server добавляет локальный сервис, обновление и health check.
-- Истечение OAuth, изменение страницы Дзена и нехватка диска требуют аварийной
-  эскалации.
+- Физическая атомарность трёх площадок невозможна; целевой visible drift — не
+  более пяти минут, затем открывается incident.
+- Выключенный Windows laptop не отправляет Telegram и alert до следующего
+  запуска. Нативные публикации YouTube и Дзена могут выйти вовремя, поэтому
+  физическая атомарность и полное отсутствие частичного выпуска не гарантируются.
+- Dzen browser automation зависит от UI и является главным integration risk.
+- Telegram-копия может не пройти одновременно size и readability gates; тогда
+  release блокируется до отдельного design decision о Local Bot API Server.
+- YouTube API project может требовать audit, прежде чем uploads смогут стать
+  public.
 
 ## What's-next
 
-Spec должен определить Publisher protocol, таблицу provider states, retry/backoff,
-compensation, capability tests, secret lifecycle, Playwright page objects и
-deployment worker. Реализация Dzen adapter начинается с smoke-теста реального
-редактора; провал теста блокирует только этот адаптер, не меняя контракт ядра.
+Spec фиксирует state machine, scheduled-link contract, Windows wake,
+retry taxonomy и adapters. Первый implementation plan обязан начинаться с Dzen,
+Telegram-size и Windows-wake tracer bullets до строительства всего пайплайна.
 
-## Проверенные ограничения площадок
+## Проверенные ограничения
 
-- YouTube Data API поддерживает resumable upload; `status.publishAt` применим к
-  private-видео, которое ещё не публиковалось.
-- Облачный Telegram Bot API ограничивает `sendVideo` 50 МБ и caption 1024
-  символами после entity parsing; локальный Bot API Server принимает загрузки
-  до 2000 МБ.
-- В открытой официальной документации Дзена не найден подтверждённый API для
-  создания и отложенной публикации статей. Это результат исследования, а не
-  гарантия отсутствия закрытого партнёрского интерфейса.
+- [YouTube Data API](https://developers.google.com/youtube/v3/docs/videos):
+  `publishAt` применим только к private video, которое ещё не публиковалось; v1
+  использует его для нативной отложки.
+- [Telegram Bot Features](https://core.telegram.org/bots/features): cloud Bot API
+  указывает upload limit 50 MB, local server — 2000 MB.
+- В открытой официальной документации Дзена не найден подтверждённый article
+  publishing API. Это результат поиска, а не утверждение об отсутствии
+  партнёрского или закрытого интерфейса.

@@ -1,0 +1,66 @@
+{
+  "$defs": {
+    "WordTiming": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "end": {
+          "exclusiveMinimum": 0,
+          "title": "End",
+          "type": "number"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "number"
+        },
+        "word": {
+          "minLength": 1,
+          "title": "Word",
+          "type": "string"
+        }
+      },
+      "required": [
+        "word",
+        "start",
+        "end",
+        "confidence"
+      ],
+      "title": "WordTiming",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "language": {
+      "minLength": 2,
+      "title": "Language",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "words": {
+      "items": {
+        "$ref": "#/$defs/WordTiming"
+      },
+      "minItems": 1,
+      "title": "Words",
+      "type": "array"
+    }
+  },
+  "required": [
+    "language",
+    "words"
+  ],
+  "title": "Transcript",
+  "type": "object"
+}

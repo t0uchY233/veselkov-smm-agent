@@ -1,0 +1,403 @@
+{
+  "$defs": {
+    "ClaimInput": {
+      "additionalProperties": false,
+      "properties": {
+        "claim_id": {
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "title": "Claim Id",
+          "type": "string"
+        },
+        "exact_text": {
+          "minLength": 3,
+          "title": "Exact Text",
+          "type": "string"
+        },
+        "materiality": {
+          "enum": [
+            "material",
+            "context"
+          ],
+          "title": "Materiality",
+          "type": "string"
+        },
+        "source_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Ids",
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "supported",
+            "opinion",
+            "conflict"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "claim_id",
+        "exact_text",
+        "materiality",
+        "status"
+      ],
+      "title": "ClaimInput",
+      "type": "object"
+    },
+    "DzenInput": {
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "maxLength": 180,
+          "minLength": 5,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "title": "DzenInput",
+      "type": "object"
+    },
+    "HumanizerEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "error_count": {
+          "minimum": 0,
+          "title": "Error Count",
+          "type": "integer"
+        },
+        "input_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Input Sha256",
+          "type": "string"
+        },
+        "output_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Output Sha256",
+          "type": "string"
+        },
+        "skill_version": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Skill Version",
+          "type": "string"
+        },
+        "stages": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Stages",
+          "type": "array"
+        },
+        "tone_of_voice_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Tone Of Voice Sha256",
+          "type": "string"
+        },
+        "tool_types": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Tool Types",
+          "type": "array"
+        }
+      },
+      "required": [
+        "skill_version",
+        "tone_of_voice_sha256",
+        "input_sha256",
+        "stages",
+        "tool_types",
+        "output_sha256",
+        "error_count"
+      ],
+      "title": "HumanizerEvidence",
+      "type": "object"
+    },
+    "ReactionInput": {
+      "additionalProperties": false,
+      "properties": {
+        "emoji": {
+          "maxLength": 8,
+          "minLength": 1,
+          "title": "Emoji",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 120,
+          "minLength": 2,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "emoji",
+        "text"
+      ],
+      "title": "ReactionInput",
+      "type": "object"
+    },
+    "SourceInput": {
+      "additionalProperties": false,
+      "properties": {
+        "checked_at": {
+          "format": "date-time",
+          "title": "Checked At",
+          "type": "string"
+        },
+        "evidence_excerpt_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Evidence Excerpt Hash",
+          "type": "string"
+        },
+        "publisher": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Publisher",
+          "type": "string"
+        },
+        "source_id": {
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "maxLength": 2083,
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "url",
+        "title",
+        "publisher",
+        "checked_at",
+        "evidence_excerpt_hash"
+      ],
+      "title": "SourceInput",
+      "type": "object"
+    },
+    "TelegramInput": {
+      "additionalProperties": false,
+      "properties": {
+        "cta": {
+          "maxLength": 500,
+          "minLength": 20,
+          "title": "Cta",
+          "type": "string"
+        },
+        "lead": {
+          "maxLength": 500,
+          "minLength": 10,
+          "title": "Lead",
+          "type": "string"
+        },
+        "reactions": {
+          "items": {
+            "$ref": "#/$defs/ReactionInput"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "title": "Reactions",
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 5,
+          "minItems": 3,
+          "title": "Steps",
+          "type": "array"
+        },
+        "title": {
+          "maxLength": 180,
+          "minLength": 5,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "lead",
+        "steps",
+        "cta",
+        "reactions"
+      ],
+      "title": "TelegramInput",
+      "type": "object"
+    },
+    "VisualInput": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor_text": {
+          "minLength": 5,
+          "title": "Anchor Text",
+          "type": "string"
+        },
+        "asset_path": {
+          "title": "Asset Path",
+          "type": "string"
+        },
+        "caption": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Caption",
+          "type": "string"
+        },
+        "claim_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Claim Ids",
+          "type": "array"
+        },
+        "kind": {
+          "enum": [
+            "image",
+            "chart",
+            "table",
+            "dashboard"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "purpose": {
+          "minLength": 10,
+          "title": "Purpose",
+          "type": "string"
+        },
+        "visual_id": {
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "title": "Visual Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "visual_id",
+        "kind",
+        "anchor_text",
+        "purpose",
+        "asset_path",
+        "caption"
+      ],
+      "title": "VisualInput",
+      "type": "object"
+    },
+    "YouTubeInput": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 5000,
+          "minLength": 10,
+          "title": "Description",
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "title": "Tags",
+          "type": "array"
+        },
+        "title": {
+          "maxLength": 100,
+          "minLength": 5,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "description",
+        "tags"
+      ],
+      "title": "YouTubeInput",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "claims": {
+      "items": {
+        "$ref": "#/$defs/ClaimInput"
+      },
+      "minItems": 1,
+      "title": "Claims",
+      "type": "array"
+    },
+    "cover_path": {
+      "title": "Cover Path",
+      "type": "string"
+    },
+    "dzen": {
+      "$ref": "#/$defs/DzenInput"
+    },
+    "humanizer": {
+      "$ref": "#/$defs/HumanizerEvidence"
+    },
+    "main_text": {
+      "minLength": 100,
+      "title": "Main Text",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/SourceInput"
+      },
+      "minItems": 1,
+      "title": "Sources",
+      "type": "array"
+    },
+    "telegram": {
+      "$ref": "#/$defs/TelegramInput"
+    },
+    "visuals": {
+      "items": {
+        "$ref": "#/$defs/VisualInput"
+      },
+      "maxItems": 5,
+      "minItems": 3,
+      "title": "Visuals",
+      "type": "array"
+    },
+    "youtube": {
+      "$ref": "#/$defs/YouTubeInput"
+    }
+  },
+  "required": [
+    "main_text",
+    "sources",
+    "claims",
+    "visuals",
+    "cover_path",
+    "telegram",
+    "youtube",
+    "dzen",
+    "humanizer"
+  ],
+  "title": "EditorialBundle",
+  "type": "object"
+}
