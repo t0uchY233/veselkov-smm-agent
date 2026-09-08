@@ -1,2 +1,1 @@
 """Editorial representation adapters."""
-

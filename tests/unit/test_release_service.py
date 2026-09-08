@@ -21,4 +21,3 @@ def test_start_release_normalizes_topic_and_sets_next_action() -> None:
 def test_start_release_rejects_blank_topic() -> None:
     with pytest.raises(ValueError, match="не может быть пустой"):
         start_release(release_id="019-test", topic=" \n ")
-

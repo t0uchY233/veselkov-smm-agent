@@ -26,4 +26,3 @@ artifact graph добавлены поверх уже существующей S
 Не сокращаются: три человеческих gates, durable jobs, platform idempotency,
 immutable approvals/artifacts и partial-failure recovery. Это сложность самой
 задачи, а не архитектурный налёт.
-

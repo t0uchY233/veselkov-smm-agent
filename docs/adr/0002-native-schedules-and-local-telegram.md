@@ -41,4 +41,3 @@ reconciliation читает фактические remote states и повтор
   incident, а Telegram восстанавливается без повторной публикации YouTube/Дзена.
 - Capability smoke Дзена обязан подтвердить identity статьи, target и
   стабильность ссылки, полученной до публикации.
-

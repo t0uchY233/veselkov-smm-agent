@@ -24,4 +24,3 @@ def start_release(*, release_id: str, topic: str, now: datetime | None = None) -
         created_at=timestamp,
         updated_at=timestamp,
     )
-
