@@ -11,6 +11,14 @@ class CommandTimedOut(RuntimeError):
     pass
 
 
+def _kill_posix_process_group(pid: int) -> None:
+    killpg = getattr(os, "killpg", None)
+    sigkill = getattr(signal, "SIGKILL", None)
+    if killpg is None or sigkill is None:
+        raise OSError("POSIX process-group cleanup is unavailable")
+    killpg(pid, sigkill)
+
+
 def run_bounded(command: list[str], *, timeout_seconds: float) -> subprocess.CompletedProcess[str]:
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
@@ -52,7 +60,7 @@ def run_bounded(command: list[str], *, timeout_seconds: float) -> subprocess.Com
                 except (OSError, subprocess.TimeoutExpired):
                     process.kill()
         else:
-            os.killpg(process.pid, signal.SIGKILL)
+            _kill_posix_process_group(process.pid)
         try:
             stdout, stderr = process.communicate(timeout=10)
         except subprocess.TimeoutExpired as cleanup_error:

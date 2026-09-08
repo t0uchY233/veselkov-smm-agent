@@ -89,7 +89,8 @@ class WindowsCredentialSecretReader:
             raise SecretUnavailableError() from None
 
     def _read_windows(self, target: str) -> SecretValue:
-        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
+        win_dll = getattr(ctypes, "WinDLL")
+        advapi32 = win_dll("advapi32", use_last_error=True)
         pointer_type = POINTER(_CredentialW)
         credential = pointer_type()
         cred_read = advapi32.CredReadW

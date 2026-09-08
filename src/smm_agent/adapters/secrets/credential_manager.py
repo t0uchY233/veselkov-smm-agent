@@ -82,7 +82,8 @@ class WindowsCredentialManager:
 
     def _inspect_windows(self, target: str) -> CredentialAvailability:
         """Call CredReadW and free its native memory without inspecting its blob."""
-        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
+        win_dll = getattr(ctypes, "WinDLL")
+        advapi32 = win_dll("advapi32", use_last_error=True)
         pointer_type = POINTER(_CredentialW)
         credential = pointer_type()
         cred_read = advapi32.CredReadW
@@ -97,13 +98,15 @@ class WindowsCredentialManager:
         cred_free.argtypes = [ctypes.c_void_p]
         cred_free.restype = None
         if not cred_read(target, self._CRED_TYPE_GENERIC, 0, byref(credential)):
-            error = ctypes.get_last_error()  # type: ignore[attr-defined]
+            get_last_error = getattr(ctypes, "get_last_error")
+            error = get_last_error()
             if error == self._ERROR_NOT_FOUND:
                 return CredentialAvailability(
                     state="unavailable",
                     message="Указанный credential не найден в Credential Manager.",
                 )
-            raise ctypes.WinError(error)  # type: ignore[attr-defined]
+            win_error = getattr(ctypes, "WinError")
+            raise win_error(error)
         try:
             return CredentialAvailability(
                 state="available",
