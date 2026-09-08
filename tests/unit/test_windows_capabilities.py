@@ -223,7 +223,7 @@ def test_icacls_output_uses_windows_oem_encoding_for_cyrillic_account() -> None:
         "icacls.exe", raw, is_windows=True, oem_encoding="cp866"
     )
 
-    assert "DESKTOP-R00H9C9\\Ассистент:(OI)(CI)(M)" == decoded
+    assert decoded == "DESKTOP-R00H9C9\\Ассистент:(OI)(CI)(M)"
 
 
 def test_capability_report_is_typed_and_does_not_claim_live_production(tmp_path: Path) -> None:
