@@ -11,9 +11,11 @@ permissions:
 
 jobs:
   quality:
-    name: Python quality and tests
+    name: Windows quality and targeted tests
     runs-on: windows-latest
     timeout-minutes: 20
+    env:
+      PYTHONUTF8: "1"
 
     steps:
       - name: Check out repository
@@ -43,6 +45,35 @@ jobs:
         run: |
           uv run python tools/generate_contracts.py
           git diff --exit-code -- docs/generated/contracts
+
+      - name: Test Windows-specific changes
+        run: >-
+          uv run pytest
+          tests/unit/test_bounded_process.py
+          tests/unit/test_config.py
+          tests/unit/test_windows_capabilities.py
+
+  tests:
+    name: Full test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --extra dev --frozen
 
       - name: Test
         run: uv run pytest
