@@ -29,10 +29,13 @@ preflight_offset_minutes = 30
 
 [youtube]
 channel_id = "CONFIGURE_YOUTUBE_CHANNEL_ID"
+oauth_client_id = "CONFIGURE_YOUTUBE_OAUTH_CLIENT_ID"
+client_secret_credential_ref = "windows-credential:VeselkovSmmAgent/YouTubeClientSecret"
 credential_ref = "windows-credential:VeselkovSmmAgent/YouTubeOAuth"
 
 [dzen]
 channel_url = "https://dzen.ru/ekonomikadliavseh"
+publisher_id = "CONFIGURE_DZEN_PUBLISHER_ID"
 # Exact identity shown by the verified Dzen Studio session; it is not a login or secret.
 author_identity = "CONFIGURE_DZEN_AUTHOR_IDENTITY"
 browser_profile = 'C:\VeselkovSmm\CONFIGURE\dzen-browser-profile'

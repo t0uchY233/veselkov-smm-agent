@@ -33,3 +33,21 @@ from checks that physically require the Windows laptop and test accounts.
   the actual Windows 11 account and power state.
 
 No live capability is claimed by the local test doubles.
+
+## 2026-09-09 baseline review pass
+
+Separate read-only review pass by the implementing agent; this is not a second
+reviewer identity, GitHub approval, or final owner risk acceptance.
+
+Findings addressed: selected-only smoke reported all-required success; FFmpeg
+smoke lacked a deadline; Windows Job Object handles lacked 64-bit argtypes;
+TOML test paths were not portable; Windows volume IDs overflowed SQLite;
+stat/fstat ctime differed; read-only cleanup masked an ingest failure.
+The incomplete standalone Dzen driver was removed from the smoke path.
+
+Review decision: ready for GitHub CI, production blocked. Ruff and strict mypy
+passed. Targeted Windows tests passed; prior full Windows failure stays recorded.
+Fresh Linux full-suite and Windows integration CI must pass before merge.
+
+Remaining: Dzen production operations, readiness wiring, OAuth rotation,
+real media calibration, scheduler wake and packaging are not accepted.

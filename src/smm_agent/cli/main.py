@@ -11,6 +11,7 @@ import typer
 from pydantic import BaseModel, ValidationError
 from typer._click.exceptions import ClickException
 
+from smm_agent.adapters.capability_smoke import WindowsLiveCapabilitySmokeProbes
 from smm_agent.adapters.editorial.docx_builder import PythonDocxBuilder
 from smm_agent.adapters.editorial.image_inspector import PillowImageInspector
 from smm_agent.adapters.media.ffmpeg import FFmpegMediaTool
@@ -234,6 +235,7 @@ def _capability_smoke(
             config_path=str(config),
             execute=execute,
             names=names,
+            probes=WindowsLiveCapabilitySmokeProbes(),
         )
     )
 
@@ -241,11 +243,17 @@ def _capability_smoke(
 @capability_smoke_app.callback(invoke_without_command=True)
 def capability_smoke_all(
     context: typer.Context,
-    config: Annotated[Path, typer.Option("--config", dir_okay=False)],
+    config: Annotated[Path | None, typer.Option("--config", dir_okay=False)] = None,
     execute: Annotated[bool, typer.Option("--execute")] = False,
 ) -> None:
     """Report or explicitly run isolated non-production capability probes."""
     if context.invoked_subcommand is None:
+        if config is None:
+            _fail(
+                "VALIDATION_FAILED",
+                "Для capability smoke нужен --config.",
+                "Укажите локальный config без secret values.",
+            )
         _capability_smoke(
             config=config,
             execute=execute,

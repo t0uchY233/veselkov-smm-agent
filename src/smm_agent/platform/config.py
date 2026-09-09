@@ -150,6 +150,8 @@ class ScheduleConfig(StrictConfigModel):
 
 class YouTubeConfig(StrictConfigModel):
     channel_id: str = Field(min_length=1, max_length=128)
+    oauth_client_id: str = Field(min_length=1, max_length=256)
+    client_secret_credential_ref: CredentialReference
     credential_ref: CredentialReference
 
     @field_validator("channel_id")
@@ -157,9 +159,18 @@ class YouTubeConfig(StrictConfigModel):
     def validate_channel_id(cls, value: str) -> str:
         return _confirmed_external_identity(value, field_name="YouTube channel_id")
 
+    @field_validator("oauth_client_id")
+    @classmethod
+    def validate_oauth_client_id(cls, value: str) -> str:
+        if not re.fullmatch(
+            r"[0-9]+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com", value
+        ):
+            raise ValueError("YouTube oauth_client_id имеет неверный формат.")
+        return value
 
 class DzenConfig(StrictConfigModel):
     channel_url: str
+    publisher_id: str = Field(pattern=r"^[a-f0-9]{24}$")
     author_identity: str = Field(min_length=1, max_length=256)
     browser_profile: ExplicitPath
 

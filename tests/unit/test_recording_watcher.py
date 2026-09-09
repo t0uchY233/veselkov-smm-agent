@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from smm_agent.adapters.files.recording_watcher import RecordingWatcher
 
 
@@ -40,7 +42,12 @@ def test_watcher_ignores_symlinks_and_unsupported_extensions(tmp_path: Path) -> 
     inbox.mkdir()
     outside = tmp_path / "outside.mp4"
     outside.write_bytes(b"private")
-    (inbox / "outside.mp4").symlink_to(outside)
+    try:
+        (inbox / "outside.mp4").symlink_to(outside)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows account lacks symlink privilege; covered on Linux CI")
+        raise
     (inbox / "notes.txt").write_text("not a recording", encoding="utf-8")
     watcher = RecordingWatcher(inbox=inbox, stable_seconds=30)
 

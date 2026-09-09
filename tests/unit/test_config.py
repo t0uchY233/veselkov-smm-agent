@@ -32,10 +32,15 @@ def config_payload(root: Path) -> dict[str, object]:
         },
         "youtube": {
             "channel_id": "youtube-channel",
+            "oauth_client_id": "1234567890-testclient.apps.googleusercontent.com",
+            "client_secret_credential_ref": (
+                "windows-credential:VeselkovSmmAgent/YouTubeClientSecret"
+            ),
             "credential_ref": "windows-credential:VeselkovSmmAgent/YouTubeOAuth",
         },
         "dzen": {
             "channel_url": "https://dzen.ru/ekonomikadliavseh",
+            "publisher_id": "64dca43ac311451c1a90cbd7",
             "author_identity": "veselkoveconomy",
             "browser_profile": str(root / "dzen-profile"),
         },

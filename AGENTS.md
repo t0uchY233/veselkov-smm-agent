@@ -49,6 +49,10 @@ the artifacts, implements accepted plans, and provides verification evidence.
 - Never run more than one test command at a time on this host.
 - Run every test through
   `/root/.local/bin/codex-test-guard --timeout <duration> -- <command...>`.
+- On Windows and CI, use the approved repository equivalent when the host tool
+  is absent: `python tools/test_guard.py --timeout <duration> -- <command...>`.
+  It holds a host lock and uses the existing bounded process-tree runner.
+  This exception was accepted with the full-v1 completion plan on 2026-09-09.
 - Use a repository-documented timeout when available; otherwise use `10m` for
   a targeted test and `20m` for a full suite.
 - Before starting a test, confirm no earlier test process or yielded test

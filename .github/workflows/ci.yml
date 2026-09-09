@@ -48,10 +48,13 @@ jobs:
 
       - name: Test Windows-specific changes
         run: >-
-          uv run pytest
+          uv run python tools/test_guard.py --timeout 10m -- python -m pytest
           tests/unit/test_bounded_process.py
           tests/unit/test_config.py
           tests/unit/test_windows_capabilities.py
+          tests/unit/test_setup_cli.py
+          tests/unit/test_recording_watcher.py
+          tests/integration/test_video_pipeline.py
 
   tests:
     name: Full test suite
@@ -76,4 +79,4 @@ jobs:
         run: uv sync --extra dev --frozen
 
       - name: Test
-        run: uv run pytest
+        run: uv run python tools/test_guard.py --timeout 20m -- python -m pytest
