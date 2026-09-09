@@ -52,6 +52,9 @@ def main() -> int:
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         parser.error("a command is required after --")
+    # Windows subprocess search can select the base Python instead of uv's venv.
+    if command[0].lower() in {"python", "python.exe"}:
+        command[0] = sys.executable
     seconds = int(match.group(1)) * (60 if match.group(2) == "m" else 1)
     try:
         with host_lock():

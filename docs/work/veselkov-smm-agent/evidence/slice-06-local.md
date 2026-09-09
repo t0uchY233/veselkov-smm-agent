@@ -128,3 +128,8 @@ Targeted result after fixes: 20 passed, 1 skipped (Windows symlink privilege is
 not granted; that case remains covered on Linux). A wide-ID roundtrip regression
 and the Windows video integration tests are included in CI. The earlier full
 suite failure is not relabelled as a pass.
+
+CI follow-up: Linux full suite passed on 31ae5f2. Windows CI initially selected
+base Python instead of the uv environment (pytest absent); guard now resolves
+plain python/python.exe to its own sys.executable. Local verification using the
+same plain-python invocation passed all 3 process/guard tests. Fresh CI pending.
