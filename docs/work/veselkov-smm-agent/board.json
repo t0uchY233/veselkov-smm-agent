@@ -115,7 +115,8 @@
       "kind": "integration",
       "deps": [],
       "doc": "plan.md",
-      "status": "claimed"
+      "status": "done",
+      "evidence": "PR #2 merged; Windows and Linux CI passed on 606b8d3"
     },
     "v1/live-composition": {
       "title": "Shared production/smoke providers and explicit readiness",
@@ -124,7 +125,7 @@
         "v1/baseline"
       ],
       "doc": "plan.md",
-      "status": "pending"
+      "status": "claimed"
     }
   }
 }

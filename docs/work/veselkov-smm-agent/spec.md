@@ -932,3 +932,17 @@ rollback проверены; spec/ADR обновлены при изменени
 - Notes: версия 0.2.1 принята после hardening-review и доменного уточнения:
   отложенная публикация Дзена заранее предоставляет рабочую ссылку, которая
   подставляется в Telegram caption до постановки Telegram в расписание.
+
+## Accepted completion refinements (2026-09-09)
+
+The owner's full-v1 implementation plan explicitly selects installed Google
+Chrome with the dedicated Dzen profile as a checked host dependency. This
+supersedes the bundled-Chromium choice above for this Windows deployment;
+release manifests and setup checks must describe Chrome compatibility honestly.
+
+Technical Telegram notifications retain local send intent before network I/O
+and a validated receipt afterwards. An unresolved send intent blocks automatic
+resend and leaves an actionable incident: local idempotency cannot prove remote
+receipt after a crash. This preserves the no-duplicate requirement without
+claiming an unavailable provider lookup capability. No secret-bearing response
+or CAPTCHA URL is persisted as evidence.

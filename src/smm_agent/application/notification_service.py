@@ -16,6 +16,7 @@ from smm_agent.contracts.publication import (
     notification_request_sha256,
 )
 from smm_agent.domain.notification.ports import AlertTransport
+from smm_agent.domain.publication.ports import ProviderOperationError
 from smm_agent.domain.publication.service import retry_decision
 from smm_agent.platform.db import Database
 from smm_agent.platform.ids import uuid7
@@ -432,6 +433,8 @@ def deliver_notification(
         _validate_receipt(request, receipt)
     except NotificationDeliveryError as exc:
         error = exc.error
+    except ProviderOperationError as exc:
+        error = RecoveryError(code=exc.code, sanitized_detail=exc.sanitized_detail)
     except Exception:
         # Transport exceptions may contain access tokens or remote response
         # bodies.  Keep a stable, non-secret classification only.

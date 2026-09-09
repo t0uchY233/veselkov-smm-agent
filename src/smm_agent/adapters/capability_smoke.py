@@ -17,13 +17,8 @@ from typing import Protocol
 
 from smm_agent.adapters.media.process import run_bounded
 from smm_agent.adapters.publishing.http import (
-    RedactingHttpsTransport,
     TelegramBotCredential,
     TelegramBotHttpsTransport,
-)
-from smm_agent.adapters.publishing.oauth import (
-    RefreshingOAuthCredential,
-    StdlibOAuthTokenRefresher,
 )
 from smm_agent.adapters.publishing.telegram import (
     MAX_TELEGRAM_VIDEO_BYTES,
@@ -40,6 +35,7 @@ from smm_agent.adapters.secrets.secret_reader import (
     SecretReader,
     WindowsCredentialSecretReader,
 )
+from smm_agent.adapters.windows.live_bindings import WindowsLiveBindings
 from smm_agent.application.capability_smoke_service import SmokeProbeResult
 from smm_agent.contracts.publication import (
     PreparedPublication,
@@ -183,22 +179,11 @@ class WindowsLiveCapabilitySmokeProbes:
         )
 
     def _new_youtube_publisher(self, config: SmmAgentConfig) -> YouTubeSmokePublisher:
-        client_secret = self._secrets.read(config.youtube.client_secret_credential_ref)
-        refresher = StdlibOAuthTokenRefresher(
-            token_url="https://oauth2.googleapis.com/token",
-            client_id=config.youtube.oauth_client_id,
-            client_secret=client_secret,
-        )
-        credential = RefreshingOAuthCredential(
-            secret_reader=self._secrets,
-            credential_reference=config.youtube.credential_ref,
-            refresher=refresher,
-        )
         receipt_path = (
             configured_path(config.runtime.data_root) / "smoke" / "youtube-receipts.json"
         )
         return YouTubePublisher(
-            transport=RedactingHttpsTransport(credential=credential, timeout_seconds=60),
+            transport=WindowsLiveBindings().youtube_transport(config=config, secrets=self._secrets),
             channel_id=config.youtube.channel_id,
             receipt_store=JsonYouTubeUploadReceiptStore(receipt_path),
             processing_max_polls=30,

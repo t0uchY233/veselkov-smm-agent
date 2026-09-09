@@ -16,6 +16,7 @@ from smm_agent.adapters.media.offline_asr import OfflineJsonRecognizer
 from smm_agent.adapters.notification.replay import ReplayAlertTransport
 from smm_agent.adapters.publishing.replay import ReplayPublisher
 from smm_agent.adapters.secrets.secret_reader import WindowsCredentialSecretReader
+from smm_agent.adapters.windows.live_bindings import WindowsLiveBindings
 from smm_agent.application.capability_service import (
     RuntimeCapabilityUnavailable,
     require_worker_capabilities,
@@ -25,7 +26,7 @@ from smm_agent.application.provider_factory import (
     ProviderFactory,
     RuntimeCompositionError,
     SecretReader,
-    UnavailableProviderFactory,
+    WindowsProviderFactory,
 )
 from smm_agent.application.setup_service import require_accepted_media_profile
 from smm_agent.contracts.video import AlignmentProfile
@@ -200,7 +201,9 @@ class DefaultWorkerRuntimeFactory:
         provider_factory: ProviderFactory | None = None,
         secret_reader: SecretReader | None = None,
     ) -> None:
-        self._provider_factory = provider_factory or UnavailableProviderFactory()
+        self._provider_factory = provider_factory or WindowsProviderFactory(
+            bindings=WindowsLiveBindings()
+        )
         self._secret_reader = secret_reader or WindowsCredentialSecretReader()
 
     def create(self, args: argparse.Namespace) -> WorkerRuntime:

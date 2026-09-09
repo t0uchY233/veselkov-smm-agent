@@ -13,6 +13,7 @@ import importlib
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 from smm_agent.domain.publication.ports import DzenDomMismatchError, ProviderOperationError
 
@@ -25,6 +26,41 @@ class PlaywrightDzenSession:
         self._context = context
         self._playwright = playwright
         self._timeout_ms = timeout_ms
+        self._manual_auth_required = False
+        self._page.on("response", self._observe_response)
+
+    def _observe_response(self, response: Any) -> None:
+        """Retain only a challenge flag, never the CAPTCHA URL/session token."""
+        parsed = urlsplit(response.url)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname not in {"dzen.ru", "www.dzen.ru"}
+            or parsed.path != "/editor-api/v2/update-publication-content-and-publish"
+        ):
+            return
+        if response.status in {401, 403}:
+            self._manual_auth_required = True
+        if response.status != 400:
+            return
+        try:
+            payload = response.json()
+            errors = payload.get("errors", []) if isinstance(payload, dict) else []
+            if isinstance(errors, list) and any(
+                isinstance(error, dict) and error.get("type") == "captcha-required-error"
+                for error in errors
+            ):
+                self._manual_auth_required = True
+        except Exception:
+            # A malformed response is handled by normal receipt verification.
+            return
+
+    def _check_auth(self) -> None:
+        if self._manual_auth_required:
+            raise ProviderOperationError(
+                code="PROVIDER_AUTH_REQUIRED",
+                sanitized_detail="Dzen requires manual authentication; reconcile before retrying.",
+            )
+
 
     @classmethod
     def open(
@@ -81,6 +117,7 @@ class PlaywrightDzenSession:
             self._playwright.stop()
 
     def goto(self, url: str) -> None:
+        self._check_auth()
         try:
             self._page.goto(url, wait_until="domcontentloaded", timeout=self._timeout_ms)
         except Exception:
@@ -90,6 +127,7 @@ class PlaywrightDzenSession:
             ) from None
 
     def is_visible(self, selector: str) -> bool:
+        self._check_auth()
         try:
             return bool(self._page.locator(selector).is_visible(timeout=self._timeout_ms))
         except Exception:
@@ -98,6 +136,7 @@ class PlaywrightDzenSession:
             return False
 
     def text_content(self, selector: str) -> str | None:
+        self._check_auth()
         try:
             return cast(
                 str | None,
@@ -107,6 +146,7 @@ class PlaywrightDzenSession:
             raise DzenDomMismatchError() from None
 
     def get_attribute(self, selector: str, name: str) -> str | None:
+        self._check_auth()
         try:
             return cast(
                 str | None,
@@ -116,18 +156,21 @@ class PlaywrightDzenSession:
             raise DzenDomMismatchError() from None
 
     def fill(self, selector: str, value: str) -> None:
+        self._check_auth()
         try:
             self._page.locator(selector).fill(value, timeout=self._timeout_ms)
         except Exception:
             raise DzenDomMismatchError() from None
 
     def click(self, selector: str) -> None:
+        self._check_auth()
         try:
             self._page.locator(selector).click(timeout=self._timeout_ms)
         except Exception:
             raise DzenDomMismatchError() from None
 
     def set_input_files(self, selector: str, paths: list[Path]) -> None:
+        self._check_auth()
         try:
             self._page.locator(selector).set_input_files(
                 [str(path) for path in paths], timeout=self._timeout_ms

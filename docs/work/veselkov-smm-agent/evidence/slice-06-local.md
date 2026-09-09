@@ -133,3 +133,21 @@ CI follow-up: Linux full suite passed on 31ae5f2. Windows CI initially selected
 base Python instead of the uv environment (pytest absent); guard now resolves
 plain python/python.exe to its own sys.executable. Local verification using the
 same plain-python invocation passed all 3 process/guard tests. Fresh CI pending.
+
+## Live bindings increment (2026-09-09)
+
+PR #2 merged as a09ae60; Linux full suite and Windows checks passed for 606b8d3.
+The default worker now uses WindowsProviderFactory with concrete OAuth, Dzen
+session and alert bindings. Its explicit production gate remains false; no
+acceptance flag is inferred. YouTube smoke shares the same OAuth binding.
+
+Migration 0008 adds durable technical-alert intents/receipts. Tests confirm
+restart returns the saved receipt, changed payload is rejected, and ambiguous
+send or wrong recipient cannot cause a second network call. Dzen production
+session recognizes the observed captcha-required-error and blocks subsequent
+operations, retaining only a boolean challenge flag, not the token-bearing URL.
+
+Validation: 38 targeted Dzen/alert/notification/worker/config tests passed;
+strict mypy passed all 82 source files. No live network mutation was performed.
+Still pending: verified production Dzen content/visual operations, readiness
+persistence and acceptance, real media/profile, wake, delivery and final release.
