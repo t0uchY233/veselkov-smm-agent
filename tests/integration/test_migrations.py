@@ -38,7 +38,7 @@ def test_existing_slice_one_database_upgrades_to_current_schema(tmp_path: Path) 
             for row in upgraded.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
 
-    assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6, 7]
+    assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6, 7, 8]
     assert "revision_target" in release_columns
     assert "recording_watch_initialized_at" in release_columns
     assert {
@@ -59,6 +59,7 @@ def test_existing_slice_one_database_upgrades_to_current_schema(tmp_path: Path) 
         "notifications",
         "notification_attempts",
         "telegram_tasks",
+        "telegram_alert_receipts",
     } <= tables
 
 
