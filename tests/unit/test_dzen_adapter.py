@@ -385,3 +385,35 @@ def test_playwright_adapter_rejects_headless_and_missing_optional_dependency(
         PlaywrightDzenSession.open(profile_path=tmp_path / "profile")
 
     assert raised.value.code == "INVALID_PAYLOAD"
+
+
+def test_playwright_challenge_response_blocks_next_mutation_without_retaining_token():
+    class Page:
+        def __init__(self):
+            self.callback = None
+
+        def on(self, event, callback):
+            assert event == "response"
+            self.callback = callback
+
+        def locator(self, selector):
+            raise AssertionError("a mutation was attempted after CAPTCHA")
+
+    class Response:
+        url = "https://dzen.ru/editor-api/v2/update-publication-content-and-publish"
+        status = 400
+
+        def json(self):
+            return {
+                "errors": [{"type": "captcha-required-error"}],
+                "captchaLink": "https://id.vk.ru/not_robot_captcha?session_token=NEVER_LOG_ME",
+            }
+
+    page = Page()
+    session = PlaywrightDzenSession(page=page, context=None, playwright=None, timeout_ms=100)
+    page.callback(Response())
+    with pytest.raises(ProviderOperationError) as error:
+        session.click("[data-testid='publish-btn']")
+    assert error.value.code == "PROVIDER_AUTH_REQUIRED"
+    assert "NEVER_LOG_ME" not in repr(vars(session))
+    assert "NEVER_LOG_ME" not in error.value.sanitized_detail

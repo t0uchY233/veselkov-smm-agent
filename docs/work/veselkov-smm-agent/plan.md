@@ -188,3 +188,14 @@ require rotation through protected local storage. Real media, manual MFA/CAPTCHA
 profile acceptance and sleep timing require owner participation; other work
 continues independently. Repeated CAPTCHA is a product limitation, not a reason
 to bypass authentication or declare readiness.
+
+### Live notification implementation detail
+
+Use existing HTTP transport and SQLite, adding migration 0008 for technical
+notification send intents/receipts. Commit intent before network I/O. A saved
+receipt is returned on repeated lookup; an unresolved intent is an actionable
+RECEIPT_MISMATCH and must never trigger automatic resend. Store request/body
+hashes, recipient and validated receipt only, never token or raw API responses.
+Implement in adapters/notification/telegram.py; map ProviderOperationError in
+notification_service; add fake-transport tests for restart, ambiguity, payload
+mismatch and wrong recipient. No real technical message is sent by these tests.

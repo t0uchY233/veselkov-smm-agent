@@ -51,3 +51,16 @@ Fresh Linux full-suite and Windows integration CI must pass before merge.
 
 Remaining: Dzen production operations, readiness wiring, OAuth rotation,
 real media calibration, scheduler wake and packaging are not accepted.
+
+## Live bindings review pass (2026-09-09)
+
+Separate review pass, same implementing agent; not a GitHub approval.
+Reviewed: no import-time network calls; default factory gate remains closed;
+OAuth secrets reach transport only; alert intent precedes network send; stored
+receipt is bound to recipient/payload; ambiguous delivery cannot auto-resend;
+Dzen response listener retains no raw payload or CAPTCHA URL. Tests: 38 passed.
+
+Remaining limitations are explicit: Dzen uses fixture selectors until its live
+page contract is implemented; production acceptance is not wired to a durable
+report yet; browser lifetime and readiness are still part of the next increment.
+Decision: send this bounded integration increment to CI, do not enable production.
