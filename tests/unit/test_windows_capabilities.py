@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from smm_agent.adapters.capability_smoke import WindowsLiveCapabilitySmokeProbes
 from smm_agent.adapters.publishing.dzen import DzenPublisher
 from smm_agent.adapters.publishing.dzen_receipts import JsonDzenReceiptStore
 from smm_agent.adapters.secrets.credential_manager import CredentialAvailability
@@ -23,6 +24,11 @@ from smm_agent.application.capability_smoke_service import (
     run_capability_smoke,
 )
 from smm_agent.application.provider_factory import RuntimeCompositionError, WindowsProviderFactory
+from smm_agent.contracts.publication import (
+    PreparedPublication,
+    PublicationRequest,
+    PublicationSnapshot,
+)
 from smm_agent.contracts.setup import CapabilityCheck
 from smm_agent.platform.config import SmmAgentConfig
 from smm_agent.platform.db import Database
@@ -80,6 +86,60 @@ class PassingSmokeProbes:
         return self._result()
 
 
+class FakeSmokeVideoFactory:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def create(self, config: SmmAgentConfig) -> Path:
+        del config
+        return self.path
+
+
+class FakeTelegramSmokePublisher:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.payload_sha256 = ""
+
+    def prepare(self, request: PublicationRequest) -> PreparedPublication:
+        self.calls.append("prepare")
+        self.payload_sha256 = request.payload_sha256
+        return PreparedPublication(
+            platform="telegram",
+            state="prepared",
+            remote_id="smoke-task",
+            payload_sha256=request.payload_sha256,
+        )
+
+    def preflight(self, remote_id: str, *, payload_sha256: str) -> None:
+        assert remote_id == "smoke-task"
+        assert payload_sha256 == self.payload_sha256
+        self.calls.append("preflight")
+
+    def arm(
+        self, remote_id: str, *, target_at_utc: datetime, operation_key: str
+    ) -> PublicationSnapshot:
+        self.calls.append("arm")
+        return PublicationSnapshot(
+            platform="telegram",
+            state="armed",
+            remote_id=remote_id,
+            payload_sha256=self.payload_sha256,
+            target_at_utc=target_at_utc,
+        )
+
+    def execute(
+        self, remote_id: str, *, operation_key: str, now: datetime
+    ) -> PublicationSnapshot:
+        del operation_key
+        self.calls.append("execute")
+        return PublicationSnapshot(
+            platform="telegram",
+            state="public",
+            remote_id=remote_id,
+            payload_sha256=self.payload_sha256,
+            target_at_utc=now,
+            public_at=now,
+        )
 class FakeSecretReader:
     def read(self, reference: str) -> SecretValue:
         assert reference.startswith("windows-credential:")
@@ -190,10 +250,15 @@ def _configured_resources(root: Path) -> SmmAgentConfig:
             },
             "youtube": {
                 "channel_id": "youtube-channel",
+                "oauth_client_id": "1234567890-testclient.apps.googleusercontent.com",
+                "client_secret_credential_ref": (
+                    "windows-credential:VeselkovSmmAgent/YouTubeClientSecret"
+                ),
                 "credential_ref": "windows-credential:VeselkovSmmAgent/YouTubeOAuth",
             },
             "dzen": {
                 "channel_url": "https://dzen.ru/ekonomikadliavseh",
+            "publisher_id": "64dca43ac311451c1a90cbd7",
                 "author_identity": "veselkoveconomy",
                 "browser_profile": str(root / "dzen-profile"),
             },
@@ -243,6 +308,7 @@ def test_capability_report_is_typed_and_does_not_claim_live_production(tmp_path:
         "dzen.browser_profile",
         "dzen.author_identity",
         "windows.task_scheduler",
+        "youtube.client_secret_credential_ref",
         "youtube.credential_ref",
         "telegram.bot_credential_ref",
         "schedule.task_credential_ref",
@@ -260,6 +326,7 @@ def test_non_windows_reports_scheduler_and_secret_store_unavailable(tmp_path: Pa
 
     assert report.local_foundation_ready is False
     assert checks["windows.task_scheduler"].state == "unavailable"
+    assert checks["youtube.client_secret_credential_ref"].state == "unavailable"
     assert checks["youtube.credential_ref"].state == "unavailable"
     assert "secret не читался" in checks["youtube.credential_ref"].message
 
@@ -389,6 +456,24 @@ def test_capability_smoke_redacts_evidence_and_stays_production_blocked(tmp_path
     )
 
 
+def test_windows_live_telegram_smoke_uses_synthetic_asset_and_confirms_receipt(
+    tmp_path: Path,
+) -> None:
+    video = tmp_path / "telegram-smoke.mp4"
+    video.write_bytes(b"synthetic-video")
+    publisher = FakeTelegramSmokePublisher()
+    probes = WindowsLiveCapabilitySmokeProbes(
+        video_factory=FakeSmokeVideoFactory(video),
+        telegram_publisher_factory=lambda config: publisher,
+        now=lambda: datetime(2026, 9, 8, 12, 0, tzinfo=UTC),
+    )
+
+    result = probes.telegram_test_send(_configured_resources(tmp_path))
+
+    assert result.passed is True
+    assert publisher.calls == ["prepare", "preflight", "arm", "execute"]
+    assert result.evidence is not None
+    assert result.evidence["video_bytes"] == str(len(b"synthetic-video"))
 def test_provider_factory_requires_explicit_production_gate_and_uses_injected_seams(
     tmp_path: Path,
 ) -> None:
@@ -420,3 +505,16 @@ def test_provider_factory_requires_explicit_production_gate_and_uses_injected_se
     assert dzen._page.expected_identity.author_identity == config.dzen.author_identity
     assert isinstance(dzen._receipt_store, JsonDzenReceiptStore)
     assert dzen._receipt_store._path == database.data_root / "state/dzen-receipts.json"
+
+
+def test_selected_smoke_does_not_claim_all_required_capabilities(tmp_path: Path) -> None:
+    report = run_capability_smoke(
+        _configured_resources(tmp_path),
+        config_path=str(tmp_path / "smm-agent.toml"),
+        execute=True,
+        names=("telegram.test_send",),
+        probes=PassingSmokeProbes(),
+    )
+    assert report.all_required_smokes_passed is False
+    assert report.production_readiness == "blocked"
+    assert sum(check.state == "passed" for check in report.capabilities) == 1

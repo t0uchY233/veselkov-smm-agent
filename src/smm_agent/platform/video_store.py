@@ -8,6 +8,15 @@ from smm_agent.adapters.files.recording_watcher import FileObservation
 from smm_agent.platform.ids import uuid7
 
 
+def encode_file_identity(value: int) -> int | str:
+    """Preserve wide Windows volume/file IDs without SQLite REAL rounding."""
+    return value if -(2**63) <= value < 2**63 else hex(value)
+
+
+def decode_file_identity(value: int | str) -> int:
+    return int(value, 16) if isinstance(value, str) else int(value)
+
+
 class VideoStore:
     @staticmethod
     def acquire_media_lease(
@@ -131,6 +140,8 @@ class VideoStore:
         height: int,
         accepted_at: str,
     ) -> None:
+        sql_device = encode_file_identity(device)
+        sql_inode = encode_file_identity(inode)
         existing = connection.execute(
             """
             SELECT candidate_id FROM recording_candidates
@@ -154,8 +165,14 @@ class VideoStore:
                 WHERE candidate_id = ?
                 """,
                 (
-                    size, mtime_ns, ctime_ns, device, inode, fingerprint,
-                    accepted_at, actual_candidate_id,
+                    size,
+                    mtime_ns,
+                    ctime_ns,
+                    sql_device,
+                    sql_inode,
+                    fingerprint,
+                    accepted_at,
+                    actual_candidate_id,
                 ),
             )
         else:
@@ -174,8 +191,8 @@ class VideoStore:
                     size,
                     mtime_ns,
                     ctime_ns,
-                    device,
-                    inode,
+                    sql_device,
+                    sql_inode,
                     fingerprint,
                     accepted_at,
                     accepted_at,
@@ -227,9 +244,7 @@ class VideoStore:
         return cast(sqlite3.Row, recording), list(visuals)
 
     @staticmethod
-    def observations(
-        connection: sqlite3.Connection, release_id: str
-    ) -> dict[str, FileObservation]:
+    def observations(connection: sqlite3.Connection, release_id: str) -> dict[str, FileObservation]:
         rows = connection.execute(
             """
             SELECT observed_path, size, mtime_ns, ctime_ns, device, inode, first_seen_at
@@ -243,8 +258,8 @@ class VideoStore:
                 size=int(row["size"]),
                 mtime_ns=int(row["mtime_ns"]),
                 ctime_ns=int(row["ctime_ns"]),
-                device=int(row["device"]),
-                inode=int(row["inode"]),
+                device=decode_file_identity(row["device"]),
+                inode=decode_file_identity(row["inode"]),
                 unchanged_since=datetime.fromisoformat(
                     str(row["first_seen_at"]).replace("Z", "+00:00")
                 ),
@@ -261,18 +276,14 @@ class VideoStore:
         return bool(row and row["recording_watch_initialized_at"])
 
     @staticmethod
-    def recording_window_opened_at(
-        connection: sqlite3.Connection, release_id: str
-    ) -> datetime:
+    def recording_window_opened_at(connection: sqlite3.Connection, release_id: str) -> datetime:
         row = connection.execute(
             "SELECT recording_window_opened_at FROM releases WHERE release_id = ?",
             (release_id,),
         ).fetchone()
         if not row or not row["recording_window_opened_at"]:
             raise RuntimeError("recording window has not been opened")
-        return datetime.fromisoformat(
-            str(row["recording_window_opened_at"]).replace("Z", "+00:00")
-        )
+        return datetime.fromisoformat(str(row["recording_window_opened_at"]).replace("Z", "+00:00"))
 
     @staticmethod
     def initialize_watch(
@@ -288,10 +299,11 @@ class VideoStore:
             (initialized_at, release_id),
         )
         for path, observation in baseline.items():
-            created_at = datetime.fromtimestamp(
-                observation.ctime_ns / 1_000_000_000, tz=window_opened_at.tzinfo
+            saved_at = datetime.fromtimestamp(
+                max(observation.ctime_ns, observation.mtime_ns) / 1_000_000_000,
+                tz=window_opened_at.tzinfo,
             )
-            is_new = created_at >= window_opened_at
+            is_new = saved_at >= window_opened_at
             state = "stabilizing" if is_new else "rejected"
             reason = None if is_new else "present before recording window"
             connection.execute(
@@ -309,8 +321,8 @@ class VideoStore:
                     observation.size,
                     observation.mtime_ns,
                     observation.ctime_ns,
-                    observation.device,
-                    observation.inode,
+                    encode_file_identity(observation.device),
+                    encode_file_identity(observation.inode),
                     state,
                     reason,
                     initialized_at,
@@ -341,10 +353,16 @@ class VideoStore:
                 SELECT 1 FROM recording_candidates
                 WHERE release_id = ? AND observed_path = ? AND state = 'rejected'
                   AND ctime_ns = ? AND device = ? AND inode = ?
+                  AND size = ? AND mtime_ns = ?
                 """,
                 (
-                    release_id, path, observation.ctime_ns,
-                    observation.device, observation.inode,
+                    release_id,
+                    path,
+                    observation.ctime_ns,
+                    encode_file_identity(observation.device),
+                    encode_file_identity(observation.inode),
+                    observation.size,
+                    observation.mtime_ns,
                 ),
             ).fetchone()
             if rejected_same_identity:
@@ -362,8 +380,8 @@ class VideoStore:
                         observation.size,
                         observation.mtime_ns,
                         observation.ctime_ns,
-                        observation.device,
-                        observation.inode,
+                        encode_file_identity(observation.device),
+                        encode_file_identity(observation.inode),
                         unchanged_since,
                         observed_at,
                         open_candidate["candidate_id"],
@@ -379,9 +397,16 @@ class VideoStore:
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'stabilizing', ?, ?)
                     """,
                     (
-                        uuid7(), release_id, path, observation.size, observation.mtime_ns,
-                        observation.ctime_ns, observation.device, observation.inode,
-                        unchanged_since, observed_at,
+                        uuid7(),
+                        release_id,
+                        path,
+                        observation.size,
+                        observation.mtime_ns,
+                        observation.ctime_ns,
+                        encode_file_identity(observation.device),
+                        encode_file_identity(observation.inode),
+                        unchanged_since,
+                        observed_at,
                     ),
                 )
 
@@ -399,9 +424,7 @@ class VideoStore:
         )
 
     @staticmethod
-    def ambiguous_candidates(
-        connection: sqlite3.Connection, release_id: str
-    ) -> list[sqlite3.Row]:
+    def ambiguous_candidates(connection: sqlite3.Connection, release_id: str) -> list[sqlite3.Row]:
         return list(
             connection.execute(
                 """

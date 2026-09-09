@@ -8,6 +8,16 @@ from pathlib import Path
 from smm_agent.domain.video.service import ALLOWED_RECORDING_SUFFIXES
 
 
+def recording_creation_ns(info: os.stat_result) -> int:
+    # Python 3.12 Windows stat and fstat disagree on legacy st_ctime.
+    # Birth time is consistent for path and handle; POSIX keeps ctime.
+    return (
+        int(getattr(info, "st_birthtime_ns", info.st_ctime_ns))
+        if os.name == "nt"
+        else info.st_ctime_ns
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class FileObservation:
     size: int
@@ -34,9 +44,7 @@ class RecordingWatcher:
         self.inbox = inbox.resolve()
         self.stable_seconds = stable_seconds
 
-    def observe(
-        self, previous: dict[str, FileObservation], *, now: datetime
-    ) -> WatchResult:
+    def observe(self, previous: dict[str, FileObservation], *, now: datetime) -> WatchResult:
         observations: dict[str, FileObservation] = {}
         stable: list[Path] = []
         for candidate in sorted(self.inbox.iterdir(), key=lambda path: path.name.casefold()):
@@ -57,7 +65,7 @@ class RecordingWatcher:
                 if old
                 and old.size == stat.st_size
                 and old.mtime_ns == stat.st_mtime_ns
-                and old.ctime_ns == stat.st_ctime_ns
+                and old.ctime_ns == recording_creation_ns(stat)
                 and old.device == stat.st_dev
                 and old.inode == stat.st_ino
                 else now
@@ -65,15 +73,14 @@ class RecordingWatcher:
             observation = FileObservation(
                 stat.st_size,
                 stat.st_mtime_ns,
-                stat.st_ctime_ns,
+                recording_creation_ns(stat),
                 stat.st_dev,
                 stat.st_ino,
                 unchanged_since,
             )
             observations[key] = observation
-            if (
-                (now - unchanged_since).total_seconds() >= self.stable_seconds
-                and self._can_open(candidate)
+            if (now - unchanged_since).total_seconds() >= self.stable_seconds and self._can_open(
+                candidate
             ):
                 stable.append(resolved)
 

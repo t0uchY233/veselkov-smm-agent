@@ -66,6 +66,10 @@ class CapabilityService:
                 browser_profile=config.dzen.browser_profile,
                 run_as_user=config.schedule.run_as_user,
             ),
+            self._credential(
+                "youtube.client_secret_credential_ref",
+                config.youtube.client_secret_credential_ref,
+            ),
             self._credential("youtube.credential_ref", config.youtube.credential_ref),
             self._credential("telegram.bot_credential_ref", config.telegram.bot_credential_ref),
             self._credential(

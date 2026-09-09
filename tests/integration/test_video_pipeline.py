@@ -590,7 +590,9 @@ def test_missing_accepted_source_requests_recording_repair(tmp_path: Path) -> No
         observation=observation(recording),
         media_tool=FakeMediaTool(),
     )
-    Path(accepted.artifacts["recording_source"]).unlink()
+    lost_source = Path(accepted.artifacts["recording_source"])
+    lost_source.chmod(lost_source.stat().st_mode | 0o200)
+    lost_source.unlink()
     worker = VideoWorker(
         database=database,
         inbox=inbox,
@@ -872,3 +874,35 @@ def test_author_can_withdraw_recording_while_render_is_in_flight(tmp_path: Path)
         pass
     else:
         raise AssertionError("withdrawn recording was rendered")
+
+
+def test_wide_windows_file_identity_survives_sqlite_roundtrip(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from smm_agent.platform.video_store import VideoStore
+
+    database = prepared_database(tmp_path)
+    with database.connect() as connection:
+        release = database.active_release(connection)
+    assert release is not None
+    now = datetime.now(UTC)
+    original = FileObservation(
+        size=100, mtime_ns=10, ctime_ns=5,
+        device=2**64 - 1, inode=2**100 + 123, unchanged_since=now,
+    )
+    with database.transaction() as connection:
+        VideoStore.save_observations(
+            connection, release_id=release.release_id,
+            observations={"wide-id.mp4": original}, observed_at=now.isoformat(),
+        )
+    with database.connect() as connection:
+        restored = VideoStore.observations(connection, release.release_id)
+    assert restored["wide-id.mp4"] == original
+    changed = replace(original, size=200, mtime_ns=20)
+    with database.transaction() as connection:
+        VideoStore.save_observations(
+            connection, release_id=release.release_id,
+            observations={"wide-id.mp4": changed}, observed_at=now.isoformat(),
+        )
+    with database.connect() as connection:
+        assert VideoStore.observations(connection, release.release_id)["wide-id.mp4"] == changed

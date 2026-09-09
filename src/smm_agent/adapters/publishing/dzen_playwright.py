@@ -33,6 +33,7 @@ class PlaywrightDzenSession:
         profile_path: Path,
         timeout_ms: int = 15_000,
         headless: bool = False,
+        browser_channel: str | None = "chrome",
     ) -> PlaywrightDzenSession:
         """Open a visible persistent browser without attempting authentication."""
 
@@ -55,6 +56,7 @@ class PlaywrightDzenSession:
             context = playwright.chromium.launch_persistent_context(
                 user_data_dir=str(profile_path),
                 headless=False,
+                channel=browser_channel,
             )
             pages = context.pages
             page = pages[0] if pages else context.new_page()

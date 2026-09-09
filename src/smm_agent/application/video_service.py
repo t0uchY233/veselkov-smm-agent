@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from smm_agent.adapters.files.recording_watcher import FileObservation
+from smm_agent.adapters.files.recording_watcher import FileObservation, recording_creation_ns
 from smm_agent.application.editorial_artifacts import (
     artifact_set_hash,
     prepare_file_artifact,
@@ -26,7 +26,7 @@ from smm_agent.domain.video.ports import MediaTool, SpeechRecognizer
 from smm_agent.domain.video.service import build_timeline, validate_recording
 from smm_agent.platform.db import Database
 from smm_agent.platform.ids import uuid7
-from smm_agent.platform.video_store import VideoStore
+from smm_agent.platform.video_store import VideoStore, decode_file_identity
 
 TELEGRAM_MAX_BYTES = 49_000_000
 DISK_RESERVE_BYTES = 2 * 1024**3
@@ -82,7 +82,7 @@ def _stage_source(
             identity = (
                 before.st_size,
                 before.st_mtime_ns,
-                before.st_ctime_ns,
+                recording_creation_ns(before),
                 before.st_dev,
                 before.st_ino,
             )
@@ -463,6 +463,8 @@ def accept_recording(
     finally:
         staged.unlink(missing_ok=True)
         if prepared_source is not None and not committed:
+            if prepared_source.path.exists():
+                prepared_source.path.chmod(prepared_source.path.stat().st_mode | 0o200)
             prepared_source.path.unlink(missing_ok=True)
 
 
@@ -496,8 +498,8 @@ def select_recording_candidate(
         size=int(candidate["size"]),
         mtime_ns=int(candidate["mtime_ns"]),
         ctime_ns=int(candidate["ctime_ns"]),
-        device=int(candidate["device"]),
-        inode=int(candidate["inode"]),
+        device=decode_file_identity(candidate["device"]),
+        inode=decode_file_identity(candidate["inode"]),
         unchanged_since=datetime.fromisoformat(
             str(candidate["first_seen_at"]).replace("Z", "+00:00")
         ),

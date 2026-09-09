@@ -155,3 +155,36 @@ Slices 1–4 реализованы и проверены; evidence сохран
 Следующий срез: Slice 5. Перед его завершением выполняются последовательный
 guarded test run, свежий независимый review и исправление critical/high findings
 в границах принятого среза.
+
+## Accepted full-v1 completion plan (2026-09-09)
+
+Owner explicitly accepted implementation. Current build loop: Slices 1-5
+implemented; Slice 6 live acceptance pending. This supersedes the older build
+loop paragraph above. Keep one Python/SQLite application, CLI and worker.
+
+1. Baseline: AGENTS.md, tools/test_guard.py, CI workflow, capability smoke service
+   and unit tests. Verify host serialization, bounded process cleanup and that
+   a selected probe cannot mark all required checks passed.
+2. Live composition: provider_factory, worker/main, publishing/dzen_page and
+   dzen_playwright, smoke and setup. Share production/smoke operations, require
+   exact publisher identity and durable receipts. CAPTCHA stops automation;
+   resume with status-first reconciliation. Readiness requires current evidence
+   and explicit owner acceptance, never a default True flag.
+3. Media: existing media adapters and setup. Real 5-10 minute recording, measured
+   anchors/crop, Full HD, Telegram <=49 MB, benchmark and human profile acceptance.
+4. Windows/dialogue: task adapters, project skill and interaction evals. Verify
+   sleep/wake, logged-off execution, three gates, GC-01 through GC-05, restart,
+   ambiguous input and no duplicate publication.
+5. Delivery: packaging/windows, release workflow, runbooks. PyInstaller one-folder,
+   PowerShell install/update/rollback, consistent DB backup, version directories,
+   manifest/checksums/SBOM. Installed Chrome is an explicit checked dependency.
+   Verify clean install, upgrade and restoration of old binaries plus database.
+6. Review/release: separate review pass per completed block, actual GitHub checks,
+   versioned Release from protected main, installed candidate and one approved
+   real release. Final risk and all author gates remain human decisions.
+
+The Windows/CI guard exception is accepted. Previously exposed OAuth secrets
+require rotation through protected local storage. Real media, manual MFA/CAPTCHA,
+profile acceptance and sleep timing require owner participation; other work
+continues independently. Repeated CAPTCHA is a product limitation, not a reason
+to bypass authentication or declare readiness.

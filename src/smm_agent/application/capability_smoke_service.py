@@ -112,13 +112,11 @@ class CapabilitySmokeService:
             self._check(name, config=config, execute=execute, selected=name in selected)
             for name in _ALL_SMOKES
         )
-        selected_checks = tuple(check for check in checks if check.name in selected)
         return CapabilitySmokeReport(
             configPath=config_path,
             configSchemaVersion=config.schema_version,
             executionRequested=execute,
-            allRequiredSmokesPassed=bool(selected_checks)
-            and all(check.state == "passed" for check in selected_checks),
+            allRequiredSmokesPassed=all(check.state == "passed" for check in checks),
             # A green synthetic/test-channel probe is evidence only.  It is not
             # permission to publish from this laptop.
             productionReadiness="blocked",
